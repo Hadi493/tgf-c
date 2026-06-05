@@ -1,4 +1,4 @@
-## tgf-c *C* Implementation of [tgf-py](https://github.com/Hadi493/tgf-py)
+## `tgf-c` *C* Implementation of [tgf-py](https://github.com/Hadi491/tgf-py)
 
 ### Quick Start
 
