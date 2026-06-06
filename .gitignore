@@ -1,7 +1,7 @@
 *.old
 nob
 tgf
-.env.h
-config.h
+config.json
+history.txt
 tdlib_db
 tdlib_files
