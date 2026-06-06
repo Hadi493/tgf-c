@@ -2,15 +2,20 @@
 
 ### Quick Start
 
-Clone The repo and configure `.env.h` & `config.h`
+Clone The repo and configure `config.json`
 ```bash
 cd tgf-c/
 
-cp config.h.example config.h
-cp .env.h.example .env.h
+cp config.json.example config.json
 ```
 
 ```bash
 gcc -o nob nob.c
 ./nob
 ```
+
+## License:
+This project is licensed under the [GNU GPLv2 License](LICENSE).
+
+## Contributing
+No Guideline - no judgement about code - just follow code style and keep it minimal.
