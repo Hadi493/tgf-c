@@ -22,6 +22,8 @@ cp config.json.example config.json
 ```bash
 gcc -o nob nob.c
 ./nob
+./tgf
+./tgf -d # for debug mode
 ```
 
 ## License:
