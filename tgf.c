@@ -1,18 +1,4 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <signal.h>
-#include <stdarg.h>
-#include <time.h>
-#include <td/telegram/td_json_client.h>
-#include "cJSON.h"
 #include "tgf.h"
-
-void handleExit(int sig) {
-    (void)sig;
-    printf("\n\nStop TGF...\n");
-    exit(0);
-}
 
 static void fwd_queue_push(long long src_chat_id, const long long *ids, int count) {
     if (fwd_queue_count >= 1024) { fprintf(stderr, "Queue full\n"); return; }
@@ -461,7 +447,6 @@ static int load_config(const char *path) {
 }
 
 int main(int argc, char *argv[]) {
-    signal(SIGINT, handleExit);
     (void)argc;
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -482,7 +467,7 @@ int main(int argc, char *argv[]) {
 
     time_t last_poll = 0;
 
-    while (1) {
+    while (keep_running) {
         const char *result = td_json_client_receive(client, 1.0);
         if (result) {
             cJSON *root = cJSON_Parse(result);
@@ -499,20 +484,7 @@ int main(int argc, char *argv[]) {
                 else
                     on_update(client, result);
                 cJSON_Delete(root);
-                if (argv[1] == NULL) {
-                    system("clear");
-                    printf("\n");
-                    printf("┌─────────────────────────────────────────────────┐\n");
-                    printf("│      -->TGF - TELEGRAM FEED MONITOR-->          │\n");
-                    printf("├─────────────────────────────────────────────────┤\n");
-                    printf("│ Target Channel ........ %s  \n", dest_channel);
-                    printf("│ Source Channels ....... %d  \n", source_count);
-                    printf("│ Forward Delay ......... %d  \n", forward_delay_sec);
-                    printf("│ Status ................ %s  \n", "ACTIVE");
-                    printf("├─────────────────────────────────────────────────┤\n");
-                    printf("│ Streaming Telegram feed...                      │\n");
-                    printf("└─────────────────────────────────────────────────┘\n");
-                }
+
             }
         }
 
@@ -523,7 +495,15 @@ int main(int argc, char *argv[]) {
                 poll_channels(client);
             }
         }
+        if (argv[1] == NULL) {
+            static time_t last_bashboard_update = 0;
+            time_t current_time = time(NULL);
 
+            if (current_time - last_bashboard_update >= 1) {
+                print_dashboard(dest_channel, source_count, forward_delay_sec);
+                last_bashboard_update = current_time;
+            }
+        }
         process_fwd_queue(client);
     }
 
@@ -534,9 +514,6 @@ int main(int argc, char *argv[]) {
     free(source_channels);
     free(api_hash);
     free(dest_channel);
-
-
-
     free(history_file);
     td_json_client_destroy(client);
     return 0;
