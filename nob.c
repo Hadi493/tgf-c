@@ -14,8 +14,5 @@ int main(int argc, char **argv) {
     cmd_append(&cmd, "tgf.c");
     if (!cmd_run(&cmd)) return 1;
 
-    cmd_append(&cmd, "./tgf");
-    if (!cmd_run(&cmd)) return 1;
-
     return 0;
 }

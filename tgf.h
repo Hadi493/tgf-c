@@ -35,7 +35,7 @@ static int        fwd_queue_count = 0;
 static double     fwd_last_time   = 0;
 
 static void on_auth_state(void *client, const char *json);
-static void on_response(void *client, const char *json, const char *extra);
+static void on_response(void *client, const char *json, const char *extra, char *argv[]);
 static void on_update(void *client, const char *json);
 static void on_error(void *client, const char *json);
 static void resolve_next(void *client);

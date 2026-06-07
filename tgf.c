@@ -1,11 +1,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <time.h>
 #include <td/telegram/td_json_client.h>
 #include "cJSON.h"
 #include "tgf.h"
+
+void handleExit(int sig) {
+    (void)sig;
+    printf("\n\nStop TGF...\n");
+    exit(0);
+}
 
 static void fwd_queue_push(long long src_chat_id, const long long *ids, int count) {
     if (fwd_queue_count >= 1024) { fprintf(stderr, "Queue full\n"); return; }
@@ -143,7 +150,7 @@ static void resolve_next(void *client) {
     resolve_active = 0;
 }
 
-static void on_response(void *client, const char *json, const char *extra) {
+static void on_response(void *client, const char *json, const char *extra, char *argv[]) {
     pending_req--;
 
     if (strcmp(extra, "auth_params") == 0 ||
@@ -190,17 +197,13 @@ static void on_response(void *client, const char *json, const char *extra) {
             int idx = atoi(extra + 8);
             source_chat_ids[idx] = chat_id;
             source_count++;
-            printf("\r  Resolving channels... %d/%d", source_count, num_sources);
+            if (argv[1] != NULL && strcmp(argv[1], "-d") == 0) {
+                printf("\r  Resolving channels... %d/%d\n", source_count, num_sources);
+            }
             fflush(stdout);
             resolve_next(client);
         }
         cJSON_Delete(root);
-        if (dest_resolved && source_count >= 1) {
-            printf("\n\n──[ TGF ]──────────────────────────────────────\n");
-            printf("  Monitoring %d channels → %s\n", source_count, dest_channel);
-            printf("  Forward delay: %ds between batches\n", forward_delay_sec);
-            printf("──────────────────────────────────────────────────\n\n");
-        }
         return;
     }
 
@@ -231,7 +234,9 @@ static void on_response(void *client, const char *json, const char *extra) {
                     break;
                 }
             }
-            printf(" FORWARDED from %s → %s\n", src_name, dest_channel);
+            if (argv[1] != NULL && strcmp(argv[1], "-d") == 0) {
+                printf(" FORWARDED from %s → %s\n", src_name, dest_channel);
+            }
         }
         cJSON_Delete(root);
         return;
@@ -455,16 +460,15 @@ static int load_config(const char *path) {
     return 0;
 }
 
-int main(void) {
+int main(int argc, char *argv[]) {
+    signal(SIGINT, handleExit);
+    (void)argc;
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
     if (load_config("config.json") != 0) return 1;
 
-    printf("──[ TGF ]──────────────────────────────────────\n");
-    printf("  Telegram Feed \n");
-    printf("  Destination: %s\n", dest_channel);
-    printf("──────────────────────────────────────────────────\n\n");
+
 
     void *client = td_json_client_create();
     if (!client) { fprintf(stderr, "Failed to create TDLib client\n"); return 1; }
@@ -491,10 +495,24 @@ int main(void) {
                 else if (strcmp(type, "error") == 0)
                     on_error(client, result);
                 else if (extra)
-                    on_response(client, result, extra);
+                    on_response(client, result, extra, argv);
                 else
                     on_update(client, result);
                 cJSON_Delete(root);
+                if (argv[1] == NULL) {
+                    system("clear");
+                    printf("\n");
+                    printf("┌─────────────────────────────────────────────────┐\n");
+                    printf("│      -->TGF - TELEGRAM FEED MONITOR-->          │\n");
+                    printf("├─────────────────────────────────────────────────┤\n");
+                    printf("│ Target Channel ........ %s  \n", dest_channel);
+                    printf("│ Source Channels ....... %d  \n", source_count);
+                    printf("│ Forward Delay ......... %d  \n", forward_delay_sec);
+                    printf("│ Status ................ %s  \n", "ACTIVE");
+                    printf("├─────────────────────────────────────────────────┤\n");
+                    printf("│ Streaming Telegram feed...                      │\n");
+                    printf("└─────────────────────────────────────────────────┘\n");
+                }
             }
         }
 
@@ -516,6 +534,9 @@ int main(void) {
     free(source_channels);
     free(api_hash);
     free(dest_channel);
+
+
+
     free(history_file);
     td_json_client_destroy(client);
     return 0;
