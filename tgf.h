@@ -1,3 +1,14 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+#include <stdbool.h>
+#include <sys/types.h>
+#include <sys/syscall.h>
+#include <td/telegram/td_json_client.h>
+#include "cJSON.h"
+
 #define POLL_INTERVAL   5
 #define MSG_LIMIT       20
 
@@ -48,3 +59,22 @@ static void handle_history_response(void *client, const char *json, long long sr
         (pos) == 0 ? "" : ",", (long long)(val)); \
     if (n_ > 0) (pos) += n_; \
 } while (0)
+
+static volatile bool keep_running = true;
+
+void print_dashboard(const char *dest, int src_count, int delay) {
+    system("clear");
+    printf("\n");
+    printf("┌─────────────────────────────────────────────────┐\n");
+    printf("│      -->TGF - TELEGRAM FEED MONITOR-->          │\n");
+    printf("├─────────────────────────────────────────────────┤\n");
+    printf("│ Target Channel ........ %s \n", dest);
+    printf("│ Source Channels ....... %d \n", src_count);
+    printf("│ Forward Delay ......... %d \n", delay);
+    printf("│ Status ................ %s \n", "ACTIVE");
+    printf("├─────────────────────────────────────────────────┤\n");
+    printf("│ Streaming Telegram feed...                      │\n");
+    printf("└─────────────────────────────────────────────────┘\n");
+    printf("[TGF] Running (PID: %d)\n", getpid());
+    printf("[TGF] Stop with: Ctrl+C | kill %d | pkill tgf\n\n", getpid());
+}
