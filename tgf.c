@@ -1,4 +1,5 @@
-#include "tgf.h"
+#define TGF_IMPLEMENTATION
+#include "nob.h"
 
 static void fwd_queue_push(long long src_chat_id, const long long *ids, int count) {
     if (fwd_queue_count >= 1024) { fprintf(stderr, "Queue full\n"); return; }
