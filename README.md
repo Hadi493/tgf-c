@@ -2,7 +2,7 @@
   <img src="tgf.png" width="166" height="144" alt="TGF" />
   <h1>TGF - Telegram Feed</h1>
 
-  <p><strong>Open-source Telegram content forwarding bot</strong></p>
+  <p><strong>Open-source Telegram content forwarding bot written in C</strong></p>
 
   <p>
     <img src="https://img.shields.io/badge/version-1.0.0-blue" alt="version" />
@@ -10,24 +10,96 @@
   </p>
 </div>
 
-### Quick Start
+TGF monitors Telegram channels and automatically forwards new messages to a destination channel. Lightweight, single-binary, no *bloat*.
 
-Clone The repo and configure `config.json`
+## Features
+
+- **Multi-source** – Forward from many channels into one
+- **Reply chains** – Forwards replies together with their parent messages
+- **Media albums** – Groups album messages and forwards them as a batch
+- **Deduplication** – Tracks forwarded messages so nothing is sent twice
+- **Configurable delay** – Set a delay between forwards to avoid rate limits
+- **History window** – Only forward messages from the last N hours
+- **Dashboard** – Live terminal UI showing status (disable with `-d`)
+- **Single binary** – No runtime deps beyond TDLib
+
+## Requirements
+
+- TDLib (`libtdjson`)
+- GCC or Clang
+- A [Telegram API ID and hash](https://my.telegram.org/apps)
+
+### Install TDLib
+
+
+**Arch Linux:**
 ```bash
-cd tgf-c/
-
-cp config.json.example config.json
+yay -S telegram-tdlib
 ```
 
+**Debian/Ubuntu:**
 ```bash
+apt install libtdjson-dev
+```
+
+**macOS (Homebrew):**
+```bash
+brew install tdlib
+```
+
+**Build from source:** See [tdlib/td](https://github.com/tdlib/td#building)
+
+## Quick Start
+
+```bash
+git clone https://github.com/Hadi493/tgf-c.git
+cd tgf-c
+
+cp config.json.example config.json
+# edit config.json with your API credentials and channels
+
 gcc -o nob nob.c
 ./nob
 ./tgf
-./tgf -d # for debug mode
 ```
 
-## License:
-This project is licensed under the [GNU GPLv2 License](LICENSE).
+## Configuration
+
+Edit `config.json`:
+
+```json
+{
+    "api_id": YOUR_API_ID,
+    "api_hash": "YOUR_API_HASH",
+    "source_channels": ["@channel1", "@channel2"],
+    "dest_channel": "@me",
+    "history_file": "history.txt",
+    "forward_delay_sec": 10,
+    "history_window_hours": 24
+}
+```
+
+| Field | Description |
+|---|---|
+| `api_id` / `api_hash` | From [my.telegram.org](https://my.telegram.org/apps) |
+| `source_channels` | Channels to monitor |
+| `dest_channel` | Where to forward (`@me` for Saved Messages) |
+| `forward_delay_sec` | Seconds between forwards (default: 1) |
+| `history_window_hours` | Only forward messages newer than this (default: 24, `0` = all) |
+
+## Usage
+
+```bash
+./tgf         # normal mode – shows dashboard
+./tgf -d      # debug mode – verbose logs, no dashboard
+```
+
+On first run you'll be prompted for your phone number, verification code, and 2FA password (if enabled). Session is cached in `tdlib_db/`.
+
+## License
+
+[GNU GPLv2](LICENSE)
 
 ## Contributing
-No Guideline - no judgement about code - just follow code style and keep it simple.
+
+No strict guidelines – just follow the existing code style and keep it simple.
