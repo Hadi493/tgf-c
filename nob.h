@@ -3291,11 +3291,12 @@ NOBDEF char *nob_temp_running_executable_path(void)
 #ifdef  TGF_IMPLEMENTATION
 
 #include <sys/syscall.h>
+#include <curses.h>
 #include <td/telegram/td_json_client.h>
 #include "cJSON.h"
 
 #define POLL_INTERVAL   5
-#define MSG_LIMIT       20
+#define MSG_LIMIT       10*1000
 
 static int      history_window_hours = 24;
 
@@ -3311,6 +3312,7 @@ static int       authorized       = 0;
 static int       dest_resolved    = 0;
 static long long dest_chat_id     = 0;
 static long long *source_chat_ids = NULL;
+static char *src_name             = "unknown";
 static int       source_count     = 0;
 static int       pending_req      = 0;
 
@@ -3338,7 +3340,6 @@ static void resolve_next(void *client);
 static void poll_channels(void *client);
 static void handle_history_response(void *client, const char *json, long long src_chat_id);
 
-
 #define APPEND_ID(ids, pos, size, val) do { \
     int n_ = snprintf((ids) + (pos), (size) - (pos), "%s%lld", \
         (pos) == 0 ? "" : ",", (long long)(val)); \
@@ -3346,22 +3347,49 @@ static void handle_history_response(void *client, const char *json, long long sr
 } while (0)
 
 static volatile bool keep_running = true;
+static bool ncurses_ready         = false;
 
-void print_dashboard(const char *dest, int src_count, int delay) {
-    system("clear");
-    printf("\n");
-    printf("┌─────────────────────────────────────────────────┐\n");
-    printf("│      -->TGF - TELEGRAM FEED MONITOR-->          │\n");
-    printf("├─────────────────────────────────────────────────┤\n");
-    printf("│ Target Channel ........ %s \n", dest);
-    printf("│ Source Channels ....... %d \n", src_count);
-    printf("│ Forward Delay ......... %dsec \n", delay);
-    printf("│ Status ................ %s \n", "ACTIVE");
-    printf("├─────────────────────────────────────────────────┤\n");
-    printf("│ Streaming Telegram feed...                      │\n");
-    printf("└─────────────────────────────────────────────────┘\n");
-    printf("[TGF] Running (PID: %d)\n", getpid());
-    printf("[TGF] Stop with: Ctrl+C | kill %d | pkill tgf\n\n", getpid());
+void ncurses_init() {
+    initscr();
+    cbreak();
+    noecho();
+    nodelay(stdscr, TRUE);
+    curs_set(0);
+    ncurses_ready = true;
+}
+
+void ncurses_cleanup() {
+    if(ncurses_ready) endwin();
+}
+
+static int  action_msg_row  = 0;
+
+void print_dashboard(const char *dest, const char *src_name, int src_count, int delay) {
+    if (!ncurses_ready) return;
+    int row = 1;
+    clear();
+    mvprintw(row++, 0, "                                                      ");
+    mvprintw(row++, 0, "                                                      ");
+    mvprintw(row++, 0, "           -->TGF - TELEGRAM FEED MONITOR-->          ");
+    mvprintw(row++, 0, "       ---------------------------------------------  ");
+    mvprintw(row++, 0, "       Target Channel ........ %s ", dest              );
+    mvprintw(row++, 0, "       Source Channels ....... %d ", src_count         );
+    mvprintw(row++, 0, "       Forward Delay ......... %dsec ", delay          );
+    mvprintw(row++, 0, "       Status ................ %s ", "ACTIVE"          );
+    mvprintw(row++, 0, "       ---------------------------------------------  ");
+    action_msg_row = row;
+    mvprintw(row++, 0, "       FORWARDED from %s -> %s", src_name, dest        );
+    mvprintw(row++, 0, "       ---------------------------------------------  ");
+    mvprintw(row++, 0, "       [TGF] Running (PID: %d)", getpid());
+    mvprintw(row++, 0, "       [TGF] Stop with: Ctrl+C | kill %d | pkill tgf", getpid());
+    refresh();
+}
+
+void update_action_msg(const char *src_name, const char *dest) {
+    if (!ncurses_ready) return;
+
+    mvprintw(action_msg_row, 0, "       FORWARDED from %s -> %s", src_name, dest);
+    refresh();
 }
 
 #endif

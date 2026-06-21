@@ -8,6 +8,7 @@ int main(int argc, char **argv) {
     cmd_append(&cmd, "gcc");
     cmd_append(&cmd, "-Wall", "-Wextra");
     cmd_append(&cmd, "-ltdjson");
+    cmd_append(&cmd, "-lncurses");
     cmd_append(&cmd, "cJSON.c");
     cmd_append(&cmd, "-O3");
     cmd_append(&cmd, "-o", "tgf");

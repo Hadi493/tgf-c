@@ -84,6 +84,9 @@ static void on_auth_state(void *client, const char *json) {
         send_req(client, "setTdlibParameters", buf, "auth_params");
     } else if (strstr(json, "authorizationStateWaitPhoneNumber")) {
         char phone[32] = {0};
+        system("clear");
+        printf("Welcome to the TGF\n");
+        printf("Enter your phone number with country code\n");
         printf("Phone (+xxx): "); fflush(stdout);
         if (fgets(phone, sizeof(phone), stdin)) phone[strcspn(phone, "\n")] = 0;
         char payload[256];
@@ -214,7 +217,6 @@ static void on_response(void *client, const char *json, const char *extra, char 
                 const char *p = extra + 4;
                 src_chat_id = atoll(p);
             }
-            const char *src_name = "unknown";
             for (int i = 0; i < num_sources; i++) {
                 if (source_chat_ids[i] == src_chat_id) {
                     src_name = source_channels[i];
@@ -454,8 +456,6 @@ int main(int argc, char *argv[]) {
 
     if (load_config("config.json") != 0) return 1;
 
-
-
     void *client = td_json_client_create();
     if (!client) { fprintf(stderr, "Failed to create TDLib client\n"); return 1; }
     td_json_client_send(client, "{\"@type\":\"setLogVerbosityLevel\",\"new_verbosity_level\":0}");
@@ -496,12 +496,15 @@ int main(int argc, char *argv[]) {
                 poll_channels(client);
             }
         }
-        if (argv[1] == NULL) {
+        if (argv[1] == NULL && authorized) {
             static time_t last_bashboard_update = 0;
             time_t current_time = time(NULL);
 
             if (current_time - last_bashboard_update >= 1) {
-                print_dashboard(dest_channel, source_count, forward_delay_sec);
+                ncurses_init();
+                atexit(ncurses_cleanup);
+                print_dashboard(dest_channel, src_name,  source_count, forward_delay_sec);
+                update_action_msg(src_name, dest_channel);
                 last_bashboard_update = current_time;
             }
         }
