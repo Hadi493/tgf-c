@@ -34,15 +34,27 @@ static const char *cJSON_GetStr(cJSON *obj, const char *key) {
     return v && cJSON_IsString(v) ? v->valuestring : NULL;
 }
 
+static unsigned int history_hash(const char *key) {
+    unsigned int h = 2166136261u;
+    while (*key) {h ^= (unsigned char)*key++; h *= 16777619u; }
+    return h & (HISTORY_SET_SIZE - 1);
+}
+
 static void history_load(void) {
-    history_keys = calloc(50000, sizeof(char *));
-    if (!history_keys) return;
     FILE *f = fopen(history_file, "r");
     if (!f) return;
     char line[128];
     while (history_count < 50000 && fgets(line, sizeof(line), f)) {
         line[strcspn(line, "\r\n")] = 0;
-        if (line[0]) history_keys[history_count++] = strdup(line);
+        if (!line[0]) continue;
+        unsigned int idx = history_hash(line);
+        while (history_set[idx]) {
+            if (strcmp(history_set[idx], line) == 0) break;
+            idx = (idx + 1) & (HISTORY_SET_SIZE - 1);
+        }
+        if (history_set[idx]) continue;
+        history_set[idx] = strdup(line);
+        history_count++;
     }
     fclose(f);
 }
@@ -50,17 +62,25 @@ static void history_load(void) {
 static int history_has(long long chat_id, long long msg_id) {
     char key[64];
     snprintf(key, sizeof(key), "%lld_%lld", chat_id, msg_id);
-    for (int i = 0; i < history_count; i++)
-        if (strcmp(history_keys[i], key) == 0) return 1;
+    unsigned int idx = history_hash(key);
+    while (history_set[idx]) {
+        if (strcmp(history_set[idx], key) == 0) return 1;
+        idx = (idx + 1) & (HISTORY_SET_SIZE - 1);
+    }
     return 0;
 }
 
 static void history_add(long long chat_id, long long msg_id) {
+    if (history_count >= 50000) return;
     char key[64];
     snprintf(key, sizeof(key), "%lld_%lld", chat_id, msg_id);
-    if (history_has(chat_id, msg_id)) return;
-    if (history_count >= 50000) return;
-    history_keys[history_count++] = strdup(key);
+    unsigned int idx = history_hash(key);
+    while (history_set[idx]) {
+        if (strcmp(history_set[idx], key) == 0) return;
+        idx = (idx + 1) & (HISTORY_SET_SIZE - 1);
+    }
+    history_set[idx] = strdup(key);
+    history_count++;
     FILE *f = fopen(history_file, "a");
     if (f) { fprintf(f, "%s\n", key); fclose(f); }
 }
@@ -511,8 +531,7 @@ int main(int argc, char *argv[]) {
         process_fwd_queue(client);
     }
 
-    for (int i = 0; i < history_count; i++) free(history_keys[i]);
-    free(history_keys);
+    for (int i = 0; i < HISTORY_SET_SIZE; i++) free(history_set[i]);
     free(source_chat_ids);
     for (int i = 0; i < num_sources; i++) free(source_channels[i]);
     free(source_channels);

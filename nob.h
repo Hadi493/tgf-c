@@ -3316,8 +3316,9 @@ static char *src_name             = "unknown";
 static int       source_count     = 0;
 static int       pending_req      = 0;
 
-static char   **history_keys     = NULL;
-static int      history_count    = 0;
+#define HISTORY_SET_SIZE 65536
+static char   *history_set[HISTORY_SET_SIZE];
+static int    history_count = 0;
 
 #define MAX_FWD_IDS 256
 
