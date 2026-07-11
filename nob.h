@@ -3290,8 +3290,21 @@ NOBDEF char *nob_temp_running_executable_path(void)
 
 #ifdef  TGF_IMPLEMENTATION
 
+#ifdef __linux__
 #include <sys/syscall.h>
+#endif
+
+#ifdef _WIN32
+#include <process.h>
+#define TGF_GETPID _getpid
+#else
+#include <unistd.h>
+#define TGF_GETPID getpid
+#endif
+
+#ifndef TGF_NOGUI
 #include <curses.h>
+#endif
 #include <td/telegram/td_json_client.h>
 #include "cJSON.h"
 
@@ -3348,6 +3361,16 @@ static void handle_history_response(void *client, const char *json, long long sr
 } while (0)
 
 static volatile bool keep_running = true;
+static bool dashboard_active = false;
+static char status_msg[256] = "";
+
+static void set_status(const char *msg)
+{
+    strncpy(status_msg, msg, sizeof(status_msg) - 1);
+    if (!dashboard_active) fprintf(stderr, "%s\n", msg);
+}
+
+#ifndef TGF_NOGUI
 static bool ncurses_ready         = false;
 
 void ncurses_init() {
@@ -3357,10 +3380,12 @@ void ncurses_init() {
     nodelay(stdscr, TRUE);
     curs_set(0);
     ncurses_ready = true;
+    dashboard_active = true;
 }
 
 void ncurses_cleanup() {
     if(ncurses_ready) endwin();
+    dashboard_active = false;
 }
 
 static int  action_msg_row  = 0;
@@ -3381,8 +3406,12 @@ void print_dashboard(const char *dest, const char *src_name, int src_count, int 
     action_msg_row = row;
     mvprintw(row++, 0, "       FORWARDED from %s -> %s", src_name, dest        );
     mvprintw(row++, 0, "       ---------------------------------------------  ");
-    mvprintw(row++, 0, "       [TGF] Running (PID: %d)", getpid());
-    mvprintw(row++, 0, "       [TGF] Stop with: Ctrl+C | kill %d | pkill tgf", getpid());
+    if (status_msg[0]) {
+        mvprintw(row++, 0, "       %s", status_msg);
+        status_msg[0] = '\0';
+    }
+    mvprintw(row++, 0, "       [TGF] Running (PID: %d)", TGF_GETPID());
+    mvprintw(row++, 0, "       [TGF] Stop with: Ctrl+C | kill %d | pkill tgf  ", TGF_GETPID());
     refresh();
 }
 
@@ -3392,5 +3421,6 @@ void update_action_msg(const char *src_name, const char *dest) {
     mvprintw(action_msg_row, 0, "       FORWARDED from %s -> %s", src_name, dest);
     refresh();
 }
+#endif
 
 #endif

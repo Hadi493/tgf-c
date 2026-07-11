@@ -5,3 +5,4 @@ config.json
 history.txt
 tdlib_db
 tdlib_files
+lib/td/build/

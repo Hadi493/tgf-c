@@ -2,7 +2,7 @@
 #include "nob.h"
 
 static void fwd_queue_push(long long src_chat_id, const long long *ids, int count) {
-    if (fwd_queue_count >= 1024) { fprintf(stderr, "Queue full\n"); return; }
+    if (fwd_queue_count >= 1024) { set_status("Queue full"); return; }
     ForwardJob *j = &fwd_queue[fwd_queue_count++];
     j->src_chat_id = src_chat_id;
     j->count = count < MAX_FWD_IDS ? count : MAX_FWD_IDS;
@@ -16,7 +16,7 @@ static void send_req(void *client, const char *type, const char *payload, const 
         n = snprintf(buf, sizeof(buf), "{\"@type\":\"%s\",%s,\"@extra\":\"%s\"}", type, payload, extra);
     else
         n = snprintf(buf, sizeof(buf), "{\"@type\":\"%s\",\"@extra\":\"%s\"}", type, extra);
-    if (n >= (int)sizeof(buf)) fprintf(stderr, "WARNING: request truncated (%d)\n", n);
+    if (n >= (int)sizeof(buf)) set_status("WARNING: request truncated");
     td_json_client_send(client, buf);
     pending_req++;
 }
@@ -229,8 +229,7 @@ static void on_response(void *client, const char *json, const char *extra, char 
         cJSON *type_item = cJSON_GetObjectItem(root, "@type");
         if (type_item && strcmp(type_item->valuestring, "error") == 0) {
             cJSON *m = cJSON_GetObjectItem(root, "message");
-            fprintf(stderr, " Forward fail [%s]: %s\n", extra,
-                    m ? m->valuestring : "?");
+            { char b[128]; snprintf(b, sizeof(b), "Forward fail [%s]: %s", extra, m ? m->valuestring : "?"); set_status(b); }
         } else {
             long long src_chat_id = 0;
             if (extra[4]) {
@@ -255,7 +254,7 @@ static void on_response(void *client, const char *json, const char *extra, char 
 static void handle_history_response(void *client, const char *json, long long src_chat_id) {
     (void)client;
     cJSON *root = cJSON_Parse(json);
-    if (!root) { fprintf(stderr, "  ✗ Failed to parse history JSON\n"); return; }
+    if (!root) { set_status("Failed to parse history JSON"); return; }
 
     cJSON *msgs = cJSON_GetObjectItem(root, "messages");
     if (!msgs || !cJSON_IsArray(msgs)) { cJSON_Delete(root); return; }
@@ -411,8 +410,7 @@ static void on_error(void *client, const char *json) {
     const char *extra = cJSON_GetStr(root, "@extra");
     const char *msg   = cJSON_GetStr(root, "message");
     int code          = (int)cJSON_GetInt64(root, "code");
-    fprintf(stderr, "✗ ERROR [extra=%s] code=%d: %s\n",
-            extra ? extra : "(none)", code, msg ? msg : "?");
+    { char b[128]; snprintf(b, sizeof(b), "ERROR [%s] code=%d: %s", extra ? extra : "?", code, msg ? msg : "?"); set_status(b); }
     if (extra && strncmp(extra, "resolve_", 8) == 0 && strcmp(extra, "resolve_dest") != 0)
         resolve_next(client);
     cJSON_Delete(root);
@@ -517,6 +515,7 @@ int main(int argc, char *argv[]) {
             }
         }
         if (argv[1] == NULL && authorized) {
+#ifndef TGF_NOGUI
             static time_t last_bashboard_update = 0;
             time_t current_time = time(NULL);
 
@@ -527,6 +526,7 @@ int main(int argc, char *argv[]) {
                 update_action_msg(src_name, dest_channel);
                 last_bashboard_update = current_time;
             }
+#endif
         }
         process_fwd_queue(client);
     }
