@@ -31,6 +31,14 @@ static int check_system_td(void)
 static int ensure_td_source(void)
 {
     if (nob_file_exists(TD_SOURCE "/CMakeLists.txt")) return 1;
+
+    if (nob_file_exists(TD_SOURCE)) {
+        nob_log(NOB_INFO, "Initializing TDLib submodule...");
+        Cmd init = {0};
+        cmd_append(&init, "git", "submodule", "update", "--init", "--depth", "1", TD_SOURCE);
+        return cmd_run(&init);
+    }
+
     nob_log(NOB_INFO, "Downloading TDLib source to " TD_SOURCE " ...");
     Cmd clone = {0};
     cmd_append(&clone, "git", "clone", "--depth", "1",
