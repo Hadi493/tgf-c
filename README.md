@@ -23,33 +23,13 @@ TGF monitors Telegram channels and automatically forwards new messages to a dest
 - **Sequential forwarding** – Collects all history first, then forwards messages in chronological order (asc/desc)
 - **Backfill resume** – Persists scan state across restarts so no messages are missed
 - **Dashboard** – Live terminal UI showing status (disable with `-d`)
-- **Single binary** – No runtime deps beyond TDLib
+- **Single binary** – TDLib is vendored; no system deps needed
 
 ## Requirements
 
-- TDLib (`libtdjson`)
 - GCC or Clang
 - A [Telegram API ID and hash](https://my.telegram.org/apps)
-
-### Install TDLib
-
-
-**Arch Linux:**
-```bash
-yay -S telegram-tdlib
-```
-
-**Debian/Ubuntu:**
-```bash
-apt install libtdjson-dev
-```
-
-**macOS (Homebrew):**
-```bash
-brew install tdlib
-```
-
-**Build from source:** See [tdlib/td](https://github.com/tdlib/td#building)
+- CMake & `make` (only if rebuilding TDLib from source)
 
 ## Quick Start
 
