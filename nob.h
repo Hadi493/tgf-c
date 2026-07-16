@@ -3394,7 +3394,7 @@ static char status_msg[256] = "";
 
 static void set_status(const char *msg)
 {
-    strncpy(status_msg, msg, sizeof(status_msg) - 1);
+    snprintf(status_msg, sizeof(status_msg), "%s", msg);
     if (!dashboard_active) fprintf(stderr, "%s\n", msg);
 }
 

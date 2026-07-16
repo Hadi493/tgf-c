@@ -2,12 +2,21 @@
 #include "nob.h"
 
 static void fwd_queue_push(long long src_chat_id, const long long *ids, int count) {
-    if (fwd_queue_count >= 1024) { set_status("Queue full"); return; }
+    if (fwd_queue_count >= 1024) { char b[64]; snprintf(b, sizeof(b), "Queue full: %lld msgs dropped", src_chat_id); set_status(b); return; }
     ForwardJob *j = &fwd_queue[fwd_queue_count++];
     j->src_chat_id = src_chat_id;
     j->count = count < MAX_FWD_IDS ? count : MAX_FWD_IDS;
     for (int i = 0; i < j->count; i++) j->ids[i] = ids[i];
 }
+
+#define MAX_PENDING_FWD 64
+static struct {
+    long long src_chat_id;
+    long long ids[MAX_FWD_IDS];
+    int count;
+    int in_use;
+} pending_fwd[MAX_PENDING_FWD];
+static int pending_fwd_count = 0;
 
 static void send_req(void *client, const char *type, const char *payload, const char *extra) {
     char buf[8192];
@@ -32,6 +41,15 @@ static long long cJSON_GetInt64(cJSON *obj, const char *key) {
 static const char *cJSON_GetStr(cJSON *obj, const char *key) {
     cJSON *v = cJSON_GetObjectItem(obj, key);
     return v && cJSON_IsString(v) ? v->valuestring : NULL;
+}
+
+static void json_escape_build(char *buf, size_t size, const char *key, const char *val) {
+    int pos = snprintf(buf, size, "\"%s\":\"", key);
+    while (*val && pos < (int)size - 4) {
+        if ((*val == '"' || *val == '\\') && pos < (int)size - 3) buf[pos++] = '\\';
+        buf[pos++] = *val++;
+    }
+    if (pos < (int)size - 2) { buf[pos++] = '"'; buf[pos] = 0; }
 }
 
 static unsigned int history_hash(const char *key) {
@@ -107,11 +125,12 @@ static void seq_tracker_load(void) {
 }
 
 static void seq_tracker_save(void) {
-    FILE *f = fopen("seq_tracker.txt", "w");
+    FILE *f = fopen("seq_tracker.txt.tmp", "w");
     if (!f) return;
     for (int i = 0; i < seq_tracker_count; i++)
         fprintf(f, "%lld %lld %lld %lld %d\n", seq_tracker[i].chat_id, seq_tracker[i].last_msg_id, seq_tracker[i].last_date, seq_tracker[i].scan_from_id, seq_tracker[i].backfill_done);
     fclose(f);
+    rename("seq_tracker.txt.tmp", "seq_tracker.txt");
 }
 
 static void seq_tracker_set(long long chat_id, long long msg_id, long long date) {
@@ -195,7 +214,9 @@ static void seq_tracker_pending_append(long long chat_id, PendingMsg msg) {
             int cap = seq_tracker[i].pending_cap;
             if (n >= cap) {
                 cap = cap ? cap * 2 : 512;
-                seq_tracker[i].pending = realloc(seq_tracker[i].pending, cap * sizeof(PendingMsg));
+                PendingMsg *np = realloc(seq_tracker[i].pending, cap * sizeof(PendingMsg));
+                if (!np) { set_status("OOM in pending_append"); return; }
+                seq_tracker[i].pending = np;
                 seq_tracker[i].pending_cap = cap;
             }
             seq_tracker[i].pending[n] = msg;
@@ -224,27 +245,27 @@ static void on_auth_state(void *client, const char *json) {
         send_req(client, "setTdlibParameters", buf, "auth_params");
     } else if (strstr(json, "authorizationStateWaitPhoneNumber")) {
         char phone[32] = {0};
-        system("clear");
+        printf("\033[2J\033[H");
         printf("Welcome to the TGF\n");
         printf("Enter your phone number with country code\n");
         printf("Phone (+xxx): "); fflush(stdout);
         if (fgets(phone, sizeof(phone), stdin)) phone[strcspn(phone, "\n")] = 0;
         char payload[256];
-        snprintf(payload, sizeof(payload), "\"phone_number\":\"%s\"", phone);
+        json_escape_build(payload, sizeof(payload), "phone_number", phone);
         send_req(client, "setAuthenticationPhoneNumber", payload, "auth_phone");
     } else if (strstr(json, "authorizationStateWaitCode")) {
         char code[32] = {0};
         printf("Code: "); fflush(stdout);
         if (fgets(code, sizeof(code), stdin)) code[strcspn(code, "\n")] = 0;
         char payload[256];
-        snprintf(payload, sizeof(payload), "\"code\":\"%s\"", code);
+        json_escape_build(payload, sizeof(payload), "code", code);
         send_req(client, "checkAuthenticationCode", payload, "auth_code");
     } else if (strstr(json, "authorizationStateWaitPassword")) {
         char pw[128] = {0};
         printf("2FA password: "); fflush(stdout);
         if (fgets(pw, sizeof(pw), stdin)) pw[strcspn(pw, "\n")] = 0;
         char payload[256];
-        snprintf(payload, sizeof(payload), "\"password\":\"%s\"", pw);
+        json_escape_build(payload, sizeof(payload), "password", pw);
         send_req(client, "checkAuthenticationPassword", payload, "auth_pw");
     } else if (strstr(json, "authorizationStateReady")) {
         authorized = 1;
@@ -352,9 +373,44 @@ static void on_response(void *client, const char *json, const char *extra, char 
             { char b[128]; snprintf(b, sizeof(b), "Forward fail [%s]: %s", extra, m ? m->valuestring : "?"); set_status(b); }
         } else {
             long long src_chat_id = 0;
+            long long msg_id = 0;
+            int is_batch = 0;
             if (extra[4]) {
                 const char *p = extra + 4;
-                src_chat_id = atoll(p);
+                const char *sep = strchr(p, '_');
+                if (sep) {
+                    char tmp[64];
+                    size_t len = (size_t)(sep - p);
+                    if (len < sizeof(tmp)) {
+                        memcpy(tmp, p, len); tmp[len] = 0;
+                        src_chat_id = atoll(tmp);
+                    }
+                    if (strcmp(sep + 1, "batch") == 0) is_batch = 1;
+                    else msg_id = atoll(sep + 1);
+                } else {
+                    src_chat_id = atoll(p);
+                }
+            }
+            if (is_batch) {
+                for (int i = 0; i < MAX_PENDING_FWD; i++) {
+                    if (pending_fwd[i].in_use && pending_fwd[i].src_chat_id == src_chat_id) {
+                        for (int j = 0; j < pending_fwd[i].count; j++)
+                            history_add(src_chat_id, pending_fwd[i].ids[j]);
+                        pending_fwd[i].in_use = 0;
+                        pending_fwd_count--;
+                        break;
+                    }
+                }
+            } else if (msg_id) {
+                history_add(src_chat_id, msg_id);
+                for (int i = 0; i < MAX_PENDING_FWD; i++) {
+                    if (pending_fwd[i].in_use && pending_fwd[i].src_chat_id == src_chat_id
+                        && pending_fwd[i].count == 1 && pending_fwd[i].ids[0] == msg_id) {
+                        pending_fwd[i].in_use = 0;
+                        pending_fwd_count--;
+                        break;
+                    }
+                }
             }
             for (int i = 0; i < num_sources; i++) {
                 if (source_chat_ids[i] == src_chat_id) {
@@ -410,12 +466,10 @@ static void process_msgs(long long src_chat_id, MsgInfo *msgs, int count) {
                 for (int b = a + 1; b < id_count; b++)
                     if (ids[a] > ids[b]) { long long tmp = ids[a]; ids[a] = ids[b]; ids[b] = tmp; }
             fwd_queue_push(src_chat_id, ids, id_count);
-            history_add(src_chat_id, msgs[i].id);
             if (enable_sequential_forwarding) seq_tracker_set(src_chat_id, msgs[i].id, msgs[i].date);
             grouped[i] = 1;
             for (int k = 0; k < count; k++) {
                 if (!grouped[k] && k != i && msgs[k].reply_to_msg_id == msgs[i].id) {
-                    history_add(src_chat_id, msgs[k].id);
                     if (enable_sequential_forwarding) seq_tracker_set(src_chat_id, msgs[k].id, msgs[k].date);
                     grouped[k] = 1;
                 }
@@ -435,7 +489,6 @@ static void process_msgs(long long src_chat_id, MsgInfo *msgs, int count) {
             for (int b = 0; b < album_count; b++) album_ids[b] = msgs[album_indices[b]].id;
             fwd_queue_push(src_chat_id, album_ids, album_count);
             for (int b = 0; b < album_count; b++) {
-                history_add(src_chat_id, msgs[album_indices[b]].id);
                 if (enable_sequential_forwarding) seq_tracker_set(src_chat_id, msgs[album_indices[b]].id, msgs[album_indices[b]].date);
                 grouped[album_indices[b]] = 1;
             }
@@ -570,11 +623,7 @@ static void handle_history_response(void *client, const char *json, long long sr
         long long chat_id  = cJSON_GetInt64(m, "chat_id");
         long long msg_date = cJSON_GetInt64(m, "date");
         if (msg_id == 0) continue;
-        if (enable_sequential_forwarding) {
-            if (history_has(chat_id, msg_id)) continue;
-        } else {
-            if (history_has(chat_id, msg_id)) continue;
-        }
+        if (history_has(chat_id, msg_id)) continue;
         if (cutoff && msg_date < cutoff) continue;
         new_msgs[new_count].id       = msg_id;
         new_msgs[new_count].album_id = album_id;
@@ -629,6 +678,20 @@ static int process_fwd_queue(void *client) {
     snprintf(payload, sizeof(payload), "\"chat_id\":%lld,\"from_chat_id\":%lld,\"message_ids\":[%s]", dest_chat_id, j->src_chat_id, ids_str);
     send_req(client, "forwardMessages", payload, extra);
 
+    if (pending_fwd_count < MAX_PENDING_FWD) {
+        int slot = -1;
+        for (int i = 0; i < MAX_PENDING_FWD; i++) {
+            if (!pending_fwd[i].in_use) { slot = i; break; }
+        }
+        if (slot >= 0) {
+            pending_fwd[slot].src_chat_id = j->src_chat_id;
+            pending_fwd[slot].count = j->count;
+            for (int i = 0; i < j->count; i++) pending_fwd[slot].ids[i] = j->ids[i];
+            pending_fwd[slot].in_use = 1;
+            pending_fwd_count++;
+        }
+    }
+
     fwd_queue_count--;
     for (int i = 0; i < fwd_queue_count; i++) fwd_queue[i] = fwd_queue[i + 1];
     fwd_last_time = now;
@@ -659,8 +722,9 @@ static int load_config(const char *path) {
     fseek(f, 0, SEEK_SET);
     char *buf = malloc(len + 1);
     if (!buf) { fclose(f); return -1; }
-    fread(buf, 1, len, f);
-    buf[len] = 0;
+    long nread = fread(buf, 1, len, f);
+    if (nread <= 0) { free(buf); fclose(f); return -1; }
+    buf[nread] = 0;
     fclose(f);
 
     cJSON *root = cJSON_Parse(buf);
@@ -761,15 +825,18 @@ int main(int argc, char *argv[]) {
         }
         if (argv[1] == NULL && authorized) {
 #ifndef TGF_NOGUI
-            static time_t last_bashboard_update = 0;
-            time_t current_time = time(NULL);
-
-            if (current_time - last_bashboard_update >= 1) {
+            static int ncurses_inited = 0;
+            if (!ncurses_inited) {
                 ncurses_init();
                 atexit(ncurses_cleanup);
-                print_dashboard(dest_channel, src_name,  source_count, forward_delay_sec);
+                ncurses_inited = 1;
+            }
+            static time_t last_dashboard_update = 0;
+            time_t current_time = time(NULL);
+            if (current_time - last_dashboard_update >= 1) {
+                print_dashboard(dest_channel, src_name, source_count, forward_delay_sec);
                 update_action_msg(src_name, dest_channel);
-                last_bashboard_update = current_time;
+                last_dashboard_update = current_time;
             }
 #endif
         }
