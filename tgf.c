@@ -478,7 +478,8 @@ static void handle_history_response(void *client, const char *json, long long sr
         cJSON_Delete(root); return;
     }
 
-    { char st[64]; snprintf(st, sizeof(st), "History: %d msgs from %lld", total, src_chat_id); set_status(st); }
+    if (enable_sequential_forwarding)
+        { char st[64]; snprintf(st, sizeof(st), "History: %d msgs from %lld", total, src_chat_id); set_status(st); }
 
     long long cutoff = history_window_hours > 0
         ? (long long)time(NULL) - history_window_hours * 3600 : 0;
@@ -583,7 +584,8 @@ static void handle_history_response(void *client, const char *json, long long sr
         new_count++;
     }
 
-    { char st[64]; snprintf(st, sizeof(st), "New: %d msgs, cutoff=%lld", new_count, cutoff); set_status(st); }
+    if (enable_sequential_forwarding)
+        { char st[64]; snprintf(st, sizeof(st), "New: %d msgs, cutoff=%lld", new_count, cutoff); set_status(st); }
 
     if (new_count == 0) { free(new_msgs); cJSON_Delete(root); return; }
 
