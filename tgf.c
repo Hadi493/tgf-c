@@ -538,6 +538,9 @@ static void handle_history_response(void *client, const char *json, long long sr
                 flush_pending(src_chat_id);
                 seq_tracker_set_backfill_done(src_chat_id, 1);
                 seq_tracker_set_scan_from(src_chat_id, 0);
+            } else if (cutoff_filtered > 0) {
+                seq_tracker_set_backfill_done(src_chat_id, 1);
+                seq_tracker_set_scan_from(src_chat_id, 0);
             } else {
                 seq_tracker_set_scan_from(src_chat_id, 0);
             }
