@@ -1,5 +1,11 @@
 #define TGF_IMPLEMENTATION
 #include "nob.h"
+#include <signal.h>
+
+static void sig_handler(int sig) {
+    (void)sig;
+    keep_running = false;
+}
 
 static void fwd_queue_push(long long src_chat_id, const long long *ids, int count) {
     if (fwd_queue_count >= 1024) { char b[64]; snprintf(b, sizeof(b), "Queue full: %lld msgs dropped", src_chat_id); set_status(b); return; }
@@ -14,9 +20,11 @@ static struct {
     long long src_chat_id;
     long long ids[MAX_FWD_IDS];
     int count;
+    long long seq;
     int in_use;
 } pending_fwd[MAX_PENDING_FWD];
 static int pending_fwd_count = 0;
+static long long fwd_seq = 0;
 
 static void send_req(void *client, const char *type, const char *payload, const char *extra) {
     char buf[8192];
@@ -44,12 +52,14 @@ static const char *cJSON_GetStr(cJSON *obj, const char *key) {
 }
 
 static void json_escape_build(char *buf, size_t size, const char *key, const char *val) {
+    if (size == 0) return;
     int pos = snprintf(buf, size, "\"%s\":\"", key);
     while (*val && pos < (int)size - 4) {
         if ((*val == '"' || *val == '\\') && pos < (int)size - 3) buf[pos++] = '\\';
         buf[pos++] = *val++;
     }
-    if (pos < (int)size - 2) { buf[pos++] = '"'; buf[pos] = 0; }
+    if (pos < (int)size - 2) { buf[pos++] = '"'; }
+    buf[size - 1] = 0;
 }
 
 static unsigned int history_hash(const char *key) {
@@ -72,6 +82,7 @@ static void history_load(void) {
         }
         if (history_set[idx]) continue;
         history_set[idx] = strdup(line);
+        if (!history_set[idx]) break;
         history_count++;
     }
     fclose(f);
@@ -98,6 +109,7 @@ static void history_add(long long chat_id, long long msg_id) {
         idx = (idx + 1) & (HISTORY_SET_SIZE - 1);
     }
     history_set[idx] = strdup(key);
+    if (!history_set[idx]) return;
     history_count++;
     FILE *f = fopen(history_file, "a");
     if (f) { fprintf(f, "%s\n", key); fclose(f); }
@@ -324,7 +336,7 @@ static void on_response(void *client, const char *json, const char *extra, char 
         cJSON *root = cJSON_Parse(json);
         if (!root) return;
         cJSON *type_item = cJSON_GetObjectItem(root, "@type");
-        if (type_item && strcmp(type_item->valuestring, "error") == 0) {
+        if (type_item && cJSON_IsString(type_item) && strcmp(type_item->valuestring, "error") == 0) {
             cJSON_Delete(root);
             return;
         }
@@ -368,50 +380,55 @@ static void on_response(void *client, const char *json, const char *extra, char 
         cJSON *root = cJSON_Parse(json);
         if (!root) return;
         cJSON *type_item = cJSON_GetObjectItem(root, "@type");
-        if (type_item && strcmp(type_item->valuestring, "error") == 0) {
+        int is_error = (type_item && cJSON_IsString(type_item) && strcmp(type_item->valuestring, "error") == 0);
+        if (is_error) {
             cJSON *m = cJSON_GetObjectItem(root, "message");
             { char b[128]; snprintf(b, sizeof(b), "Forward fail [%s]: %s", extra, m ? m->valuestring : "?"); set_status(b); }
-        } else {
-            long long src_chat_id = 0;
-            long long msg_id = 0;
-            int is_batch = 0;
-            if (extra[4]) {
-                const char *p = extra + 4;
-                const char *sep = strchr(p, '_');
-                if (sep) {
-                    char tmp[64];
-                    size_t len = (size_t)(sep - p);
-                    if (len < sizeof(tmp)) {
-                        memcpy(tmp, p, len); tmp[len] = 0;
-                        src_chat_id = atoll(tmp);
-                    }
-                    if (strcmp(sep + 1, "batch") == 0) is_batch = 1;
-                    else msg_id = atoll(sep + 1);
+        }
+        long long src_chat_id = 0;
+        long long msg_id = 0;
+        long long batch_seq = 0;
+        int is_batch = 0;
+        if (extra[4]) {
+            const char *p = extra + 4;
+            const char *sep = strchr(p, '_');
+            if (sep) {
+                char tmp[64];
+                size_t len = (size_t)(sep - p);
+                if (len < sizeof(tmp)) {
+                    memcpy(tmp, p, len); tmp[len] = 0;
+                    src_chat_id = atoll(tmp);
+                }
+                if (strncmp(sep + 1, "batch_", 6) == 0) {
+                    is_batch = 1;
+                    batch_seq = atoll(sep + 7);
                 } else {
-                    src_chat_id = atoll(p);
+                    msg_id = atoll(sep + 1);
                 }
+            } else {
+                src_chat_id = atoll(p);
             }
+        }
+        for (int i = 0; i < MAX_PENDING_FWD; i++) {
+            if (!pending_fwd[i].in_use) continue;
+            int match = 0;
             if (is_batch) {
-                for (int i = 0; i < MAX_PENDING_FWD; i++) {
-                    if (pending_fwd[i].in_use && pending_fwd[i].src_chat_id == src_chat_id) {
-                        for (int j = 0; j < pending_fwd[i].count; j++)
-                            history_add(src_chat_id, pending_fwd[i].ids[j]);
-                        pending_fwd[i].in_use = 0;
-                        pending_fwd_count--;
-                        break;
-                    }
-                }
+                if (pending_fwd[i].src_chat_id == src_chat_id && pending_fwd[i].seq == batch_seq) match = 1;
             } else if (msg_id) {
-                history_add(src_chat_id, msg_id);
-                for (int i = 0; i < MAX_PENDING_FWD; i++) {
-                    if (pending_fwd[i].in_use && pending_fwd[i].src_chat_id == src_chat_id
-                        && pending_fwd[i].count == 1 && pending_fwd[i].ids[0] == msg_id) {
-                        pending_fwd[i].in_use = 0;
-                        pending_fwd_count--;
-                        break;
-                    }
-                }
+                if (pending_fwd[i].src_chat_id == src_chat_id
+                    && pending_fwd[i].count == 1 && pending_fwd[i].ids[0] == msg_id) match = 1;
             }
+            if (match) {
+                if (!is_error) {
+                    for (int j = 0; j < pending_fwd[i].count; j++)
+                        history_add(src_chat_id, pending_fwd[i].ids[j]);
+                }
+                pending_fwd[i].in_use = 0;
+                pending_fwd_count--;
+                break;
+            }
+        }
+        if (!is_error) {
             for (int i = 0; i < num_sources; i++) {
                 if (source_chat_ids[i] == src_chat_id) {
                     src_name = source_channels[i];
@@ -669,10 +686,11 @@ static int process_fwd_queue(void *client) {
         APPEND_ID(ids_str, pos, sizeof(ids_str), j->ids[i]);
 
     char extra[64];
+    long long my_seq = fwd_seq++;
     if (j->count == 1)
         snprintf(extra, sizeof(extra), "fwd_%lld_%lld", j->src_chat_id, j->ids[0]);
     else
-        snprintf(extra, sizeof(extra), "fwd_%lld_batch", j->src_chat_id);
+        snprintf(extra, sizeof(extra), "fwd_%lld_batch_%lld", j->src_chat_id, my_seq);
 
     char payload[16384];
     snprintf(payload, sizeof(payload), "\"chat_id\":%lld,\"from_chat_id\":%lld,\"message_ids\":[%s]", dest_chat_id, j->src_chat_id, ids_str);
@@ -686,6 +704,7 @@ static int process_fwd_queue(void *client) {
         if (slot >= 0) {
             pending_fwd[slot].src_chat_id = j->src_chat_id;
             pending_fwd[slot].count = j->count;
+            pending_fwd[slot].seq = my_seq;
             for (int i = 0; i < j->count; i++) pending_fwd[slot].ids[i] = j->ids[i];
             pending_fwd[slot].in_use = 1;
             pending_fwd_count++;
@@ -791,6 +810,8 @@ int main(int argc, char *argv[]) {
 
     history_load();
     if (enable_sequential_forwarding) seq_tracker_load();
+    signal(SIGINT, sig_handler);
+    signal(SIGTERM, sig_handler);
     td_json_client_send(client, "{\"@type\":\"getAuthorizationState\"}");
 
     time_t last_poll = 0;
