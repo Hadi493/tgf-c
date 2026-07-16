@@ -3312,6 +3312,27 @@ NOBDEF char *nob_temp_running_executable_path(void)
 #define MSG_LIMIT       10*1000
 
 static int      history_window_hours = 24;
+static int      enable_sequential_forwarding = 0;
+static int      sequence_direction = 0; // 0 = asc (old→new), 1 = desc (new→old)
+
+#define MAX_SEQ_TRACKER 128
+
+typedef struct {
+    long long id, album_id, reply_to_msg_id, date;
+} PendingMsg;
+
+typedef struct {
+    long long chat_id;
+    long long last_msg_id;
+    long long last_date;
+    long long scan_from_id;
+    int       backfill_done;
+    PendingMsg *pending;
+    int       pending_count;
+    int       pending_cap;
+} SeqEntry;
+static SeqEntry seq_tracker[MAX_SEQ_TRACKER];
+static int      seq_tracker_count = 0;
 
 static int      api_id;
 static char    *api_hash;
@@ -3353,6 +3374,13 @@ static void on_error(void *client, const char *json);
 static void resolve_next(void *client);
 static void poll_channels(void *client);
 static void handle_history_response(void *client, const char *json, long long src_chat_id);
+static void seq_tracker_load(void);
+static void seq_tracker_save(void);
+static void seq_tracker_set(long long chat_id, long long msg_id, long long date);
+static long long seq_tracker_get_scan_from(long long chat_id);
+static void seq_tracker_set_scan_from(long long chat_id, long long msg_id);
+static int seq_tracker_is_backfill_done(long long chat_id);
+static void seq_tracker_set_backfill_done(long long chat_id, int done);
 
 #define APPEND_ID(ids, pos, size, val) do { \
     int n_ = snprintf((ids) + (pos), (size) - (pos), "%s%lld", \

@@ -6,6 +6,8 @@
         "channel1",
         "channel2"
     ],
+    "enable_sequential_forwarding": true,
+    "sequence_direction": "asc",
     "dest_channel": "@me",
     "history_file": "history.txt",
     "forward_delay_sec": 10
