@@ -1,6 +1,5 @@
 #define TGF_IMPLEMENTATION
 #include "nob.h"
-#include <signal.h>
 
 static void sig_handler(int sig) {
     (void)sig;
@@ -8,23 +7,18 @@ static void sig_handler(int sig) {
 }
 
 static void fwd_queue_push(long long src_chat_id, const long long *ids, int count) {
-    if (fwd_queue_count >= 1024) { char b[64]; snprintf(b, sizeof(b), "Queue full: %lld msgs dropped", src_chat_id); set_status(b); return; }
+    if (fwd_queue_count >= fwd_queue_cap) {
+        int new_cap = fwd_queue_cap ? fwd_queue_cap * 2 : 1024;
+        ForwardJob *nq = realloc(fwd_queue, new_cap * sizeof(ForwardJob));
+        if (!nq) { char b[64]; snprintf(b, sizeof(b), "OOM: fwd queue (%d)", new_cap); set_status(b); return; }
+        fwd_queue = nq;
+        fwd_queue_cap = new_cap;
+    }
     ForwardJob *j = &fwd_queue[fwd_queue_count++];
     j->src_chat_id = src_chat_id;
     j->count = count < MAX_FWD_IDS ? count : MAX_FWD_IDS;
     for (int i = 0; i < j->count; i++) j->ids[i] = ids[i];
 }
-
-#define MAX_PENDING_FWD 64
-static struct {
-    long long src_chat_id;
-    long long ids[MAX_FWD_IDS];
-    int count;
-    long long seq;
-    int in_use;
-} pending_fwd[MAX_PENDING_FWD];
-static int pending_fwd_count = 0;
-static long long fwd_seq = 0;
 
 static void send_req(void *client, const char *type, const char *payload, const char *extra) {
     char buf[8192];
@@ -65,54 +59,127 @@ static void json_escape_build(char *buf, size_t size, const char *key, const cha
 static unsigned int history_hash(const char *key) {
     unsigned int h = 2166136261u;
     while (*key) {h ^= (unsigned char)*key++; h *= 16777619u; }
-    return h & (HISTORY_SET_SIZE - 1);
+    return h;
+}
+
+static void history_rehash(int new_size) {
+    char **ns = calloc(new_size, sizeof(char *));
+    time_t *nt = calloc(new_size, sizeof(time_t));
+    if (!ns || !nt) { free(ns); free(nt); return; }
+    for (int i = 0; i < history_set_size; i++) {
+        if (history_set[i]) {
+            unsigned int idx = history_hash(history_set[i]) & (new_size - 1);
+            while (ns[idx]) idx = (idx + 1) & (new_size - 1);
+            ns[idx] = history_set[i];
+            nt[idx] = history_time[i];
+        }
+    }
+    free(history_set);
+    free(history_time);
+    history_set = ns;
+    history_time = nt;
+    history_set_size = new_size;
 }
 
 static void history_load(void) {
     FILE *f = fopen(history_file, "r");
     if (!f) return;
+    if (!history_set) {
+        history_set = calloc(16384, sizeof(char *));
+        history_time = calloc(16384, sizeof(time_t));
+        if (!history_set || !history_time) { free(history_set); free(history_time); history_set = NULL; history_time = NULL; fclose(f); return; }
+        history_set_size = 16384;
+    }
     char line[128];
-    while (history_count < 50000 && fgets(line, sizeof(line), f)) {
+    while (fgets(line, sizeof(line), f)) {
         line[strcspn(line, "\r\n")] = 0;
         if (!line[0]) continue;
-        unsigned int idx = history_hash(line);
+        char key[64]; long long ts = 0;
+        sscanf(line, "%63s %lld", key, &ts);
+        if (history_count >= history_set_size * 3 / 4)
+            history_rehash(history_set_size * 2);
+        unsigned int idx = history_hash(key) & (history_set_size - 1);
         while (history_set[idx]) {
-            if (strcmp(history_set[idx], line) == 0) break;
-            idx = (idx + 1) & (HISTORY_SET_SIZE - 1);
+            if (strcmp(history_set[idx], key) == 0) break;
+            idx = (idx + 1) & (history_set_size - 1);
         }
         if (history_set[idx]) continue;
-        history_set[idx] = strdup(line);
+        history_set[idx] = strdup(key);
         if (!history_set[idx]) break;
+        history_time[idx] = (time_t)ts;
         history_count++;
     }
     fclose(f);
 }
 
 static int history_has(long long chat_id, long long msg_id) {
+    if (!history_set) return 0;
     char key[64];
     snprintf(key, sizeof(key), "%lld_%lld", chat_id, msg_id);
-    unsigned int idx = history_hash(key);
+    unsigned int idx = history_hash(key) & (history_set_size - 1);
+    time_t now = time(NULL);
     while (history_set[idx]) {
-        if (strcmp(history_set[idx], key) == 0) return 1;
-        idx = (idx + 1) & (HISTORY_SET_SIZE - 1);
+        if (strcmp(history_set[idx], key) == 0) {
+            if (history_window_hours <= 0) return 1;
+            if (history_time[idx] == 0) return 1;
+            if (now - history_time[idx] < history_window_hours * 3600) return 1;
+            return 0;
+        }
+        idx = (idx + 1) & (history_set_size - 1);
     }
     return 0;
 }
 
 static void history_add(long long chat_id, long long msg_id) {
-    if (history_count >= 50000) return;
+    if (!history_set) {
+        history_set = calloc(16384, sizeof(char *));
+        history_time = calloc(16384, sizeof(time_t));
+        if (!history_set || !history_time) { free(history_set); free(history_time); history_set = NULL; history_time = NULL; return; }
+        history_set_size = 16384;
+    }
+    if (history_count >= history_set_size * 3 / 4)
+        history_rehash(history_set_size * 2);
     char key[64];
     snprintf(key, sizeof(key), "%lld_%lld", chat_id, msg_id);
-    unsigned int idx = history_hash(key);
+    unsigned int idx = history_hash(key) & (history_set_size - 1);
     while (history_set[idx]) {
-        if (strcmp(history_set[idx], key) == 0) return;
-        idx = (idx + 1) & (HISTORY_SET_SIZE - 1);
+        if (strcmp(history_set[idx], key) == 0) {
+            history_time[idx] = time(NULL);
+            return;
+        }
+        idx = (idx + 1) & (history_set_size - 1);
     }
     history_set[idx] = strdup(key);
     if (!history_set[idx]) return;
+    history_time[idx] = time(NULL);
     history_count++;
     FILE *f = fopen(history_file, "a");
-    if (f) { fprintf(f, "%s\n", key); fclose(f); }
+    if (f) { fprintf(f, "%s %lld\n", key, (long long)history_time[idx]); fclose(f); }
+}
+
+static void history_prune(void) {
+    if (!history_set || history_window_hours <= 0) return;
+    time_t now = time(NULL);
+    time_t cutoff = now - history_window_hours * 3600;
+    int pruned = 0;
+    for (int i = 0; i < history_set_size; i++) {
+        if (history_set[i] && history_time[i] > 0 && history_time[i] < cutoff) {
+            free(history_set[i]);
+            history_set[i] = NULL;
+            history_time[i] = 0;
+            history_count--;
+            pruned++;
+        }
+    }
+    if (!pruned) return;
+    FILE *f = fopen(history_file, "w");
+    if (!f) return;
+    for (int i = 0; i < history_set_size; i++) {
+        if (history_set[i])
+            fprintf(f, "%s %lld\n", history_set[i], (long long)history_time[i]);
+    }
+    fclose(f);
+    char b[80]; snprintf(b, sizeof(b), "History pruned %d old entries", pruned); set_status(b);
 }
 
 static void seq_tracker_load(void) {
@@ -380,55 +447,12 @@ static void on_response(void *client, const char *json, const char *extra, char 
         cJSON *root = cJSON_Parse(json);
         if (!root) return;
         cJSON *type_item = cJSON_GetObjectItem(root, "@type");
-        int is_error = (type_item && cJSON_IsString(type_item) && strcmp(type_item->valuestring, "error") == 0);
-        if (is_error) {
+        if (type_item && cJSON_IsString(type_item) && strcmp(type_item->valuestring, "error") == 0) {
             cJSON *m = cJSON_GetObjectItem(root, "message");
             { char b[128]; snprintf(b, sizeof(b), "Forward fail [%s]: %s", extra, m ? m->valuestring : "?"); set_status(b); }
-        }
-        long long src_chat_id = 0;
-        long long msg_id = 0;
-        long long batch_seq = 0;
-        int is_batch = 0;
-        if (extra[4]) {
-            const char *p = extra + 4;
-            const char *sep = strchr(p, '_');
-            if (sep) {
-                char tmp[64];
-                size_t len = (size_t)(sep - p);
-                if (len < sizeof(tmp)) {
-                    memcpy(tmp, p, len); tmp[len] = 0;
-                    src_chat_id = atoll(tmp);
-                }
-                if (strncmp(sep + 1, "batch_", 6) == 0) {
-                    is_batch = 1;
-                    batch_seq = atoll(sep + 7);
-                } else {
-                    msg_id = atoll(sep + 1);
-                }
-            } else {
-                src_chat_id = atoll(p);
-            }
-        }
-        for (int i = 0; i < MAX_PENDING_FWD; i++) {
-            if (!pending_fwd[i].in_use) continue;
-            int match = 0;
-            if (is_batch) {
-                if (pending_fwd[i].src_chat_id == src_chat_id && pending_fwd[i].seq == batch_seq) match = 1;
-            } else if (msg_id) {
-                if (pending_fwd[i].src_chat_id == src_chat_id
-                    && pending_fwd[i].count == 1 && pending_fwd[i].ids[0] == msg_id) match = 1;
-            }
-            if (match) {
-                if (!is_error) {
-                    for (int j = 0; j < pending_fwd[i].count; j++)
-                        history_add(src_chat_id, pending_fwd[i].ids[j]);
-                }
-                pending_fwd[i].in_use = 0;
-                pending_fwd_count--;
-                break;
-            }
-        }
-        if (!is_error) {
+        } else {
+            long long src_chat_id = 0;
+            if (extra[4]) src_chat_id = atoll(extra + 4);
             for (int i = 0; i < num_sources; i++) {
                 if (source_chat_ids[i] == src_chat_id) {
                     src_name = source_channels[i];
@@ -483,10 +507,12 @@ static void process_msgs(long long src_chat_id, MsgInfo *msgs, int count) {
                 for (int b = a + 1; b < id_count; b++)
                     if (ids[a] > ids[b]) { long long tmp = ids[a]; ids[a] = ids[b]; ids[b] = tmp; }
             fwd_queue_push(src_chat_id, ids, id_count);
+            history_add(src_chat_id, msgs[i].id);
             if (enable_sequential_forwarding) seq_tracker_set(src_chat_id, msgs[i].id, msgs[i].date);
             grouped[i] = 1;
             for (int k = 0; k < count; k++) {
                 if (!grouped[k] && k != i && msgs[k].reply_to_msg_id == msgs[i].id) {
+                    history_add(src_chat_id, msgs[k].id);
                     if (enable_sequential_forwarding) seq_tracker_set(src_chat_id, msgs[k].id, msgs[k].date);
                     grouped[k] = 1;
                 }
@@ -506,6 +532,7 @@ static void process_msgs(long long src_chat_id, MsgInfo *msgs, int count) {
             for (int b = 0; b < album_count; b++) album_ids[b] = msgs[album_indices[b]].id;
             fwd_queue_push(src_chat_id, album_ids, album_count);
             for (int b = 0; b < album_count; b++) {
+                history_add(src_chat_id, msgs[album_indices[b]].id);
                 if (enable_sequential_forwarding) seq_tracker_set(src_chat_id, msgs[album_indices[b]].id, msgs[album_indices[b]].date);
                 grouped[album_indices[b]] = 1;
             }
@@ -686,30 +713,14 @@ static int process_fwd_queue(void *client) {
         APPEND_ID(ids_str, pos, sizeof(ids_str), j->ids[i]);
 
     char extra[64];
-    long long my_seq = fwd_seq++;
     if (j->count == 1)
         snprintf(extra, sizeof(extra), "fwd_%lld_%lld", j->src_chat_id, j->ids[0]);
     else
-        snprintf(extra, sizeof(extra), "fwd_%lld_batch_%lld", j->src_chat_id, my_seq);
+        snprintf(extra, sizeof(extra), "fwd_%lld_batch", j->src_chat_id);
 
     char payload[16384];
     snprintf(payload, sizeof(payload), "\"chat_id\":%lld,\"from_chat_id\":%lld,\"message_ids\":[%s]", dest_chat_id, j->src_chat_id, ids_str);
     send_req(client, "forwardMessages", payload, extra);
-
-    if (pending_fwd_count < MAX_PENDING_FWD) {
-        int slot = -1;
-        for (int i = 0; i < MAX_PENDING_FWD; i++) {
-            if (!pending_fwd[i].in_use) { slot = i; break; }
-        }
-        if (slot >= 0) {
-            pending_fwd[slot].src_chat_id = j->src_chat_id;
-            pending_fwd[slot].count = j->count;
-            pending_fwd[slot].seq = my_seq;
-            for (int i = 0; i < j->count; i++) pending_fwd[slot].ids[i] = j->ids[i];
-            pending_fwd[slot].in_use = 1;
-            pending_fwd_count++;
-        }
-    }
 
     fwd_queue_count--;
     for (int i = 0; i < fwd_queue_count; i++) fwd_queue[i] = fwd_queue[i + 1];
@@ -862,9 +873,14 @@ int main(int argc, char *argv[]) {
 #endif
         }
         process_fwd_queue(client);
+        { static time_t last_prune = 0; time_t now = time(NULL);
+          if (now - last_prune >= 1200) { history_prune(); last_prune = now; } }
     }
 
-    for (int i = 0; i < HISTORY_SET_SIZE; i++) free(history_set[i]);
+    for (int i = 0; i < history_set_size; i++) free(history_set[i]);
+    free(history_set);
+    free(history_time);
+    free(fwd_queue);
     free(source_chat_ids);
     for (int i = 0; i < num_sources; i++) free(source_channels[i]);
     free(source_channels);

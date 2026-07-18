@@ -3306,14 +3306,15 @@ NOBDEF char *nob_temp_running_executable_path(void)
 #include <curses.h>
 #endif
 #include <td/telegram/td_json_client.h>
+#include <signal.h>
 #include "cJSON.h"
 
-#define POLL_INTERVAL   5
-#define MSG_LIMIT       10*1000
+#define POLL_INTERVAL 5
+#define MSG_LIMIT     10*1000
 
-static int      history_window_hours = 24;
-static int      enable_sequential_forwarding = 0;
-static int      sequence_direction = 0; // 0 = asc (old→new), 1 = desc (new→old)
+static int history_window_hours         = 24;
+static int enable_sequential_forwarding = 0;
+static int sequence_direction           = 0; // 0 = asc (old→new), 1 = desc (new→old)
 
 #define MAX_SEQ_TRACKER 128
 
@@ -3346,13 +3347,14 @@ static int       authorized       = 0;
 static int       dest_resolved    = 0;
 static long long dest_chat_id     = 0;
 static long long *source_chat_ids = NULL;
-static char *src_name             = "unknown";
+static char      *src_name        = "unknown";
 static int       source_count     = 0;
 static int       pending_req      = 0;
 
-#define HISTORY_SET_SIZE 65536
-static char   *history_set[HISTORY_SET_SIZE];
-static int    history_count = 0;
+static char **history_set = NULL;
+static int  history_set_size = 0;
+static int  history_count = 0;
+static time_t *history_time = NULL;
 
 #define MAX_FWD_IDS 256
 
@@ -3363,8 +3365,9 @@ typedef struct {
     int       count;
 } ForwardJob;
 
-static ForwardJob fwd_queue[1024];
+static ForwardJob *fwd_queue = NULL;
 static int        fwd_queue_count = 0;
+static int        fwd_queue_cap = 0;
 static double     fwd_last_time   = 0;
 
 static void on_auth_state(void *client, const char *json);
@@ -3399,7 +3402,7 @@ static void set_status(const char *msg)
 }
 
 #ifndef TGF_NOGUI
-static bool ncurses_ready         = false;
+static bool ncurses_ready = false;
 
 void ncurses_init() {
     initscr();
@@ -3416,7 +3419,7 @@ void ncurses_cleanup() {
     dashboard_active = false;
 }
 
-static int  action_msg_row  = 0;
+static int  action_msg_row = 0;
 
 void print_dashboard(const char *dest, const char *src_name, int src_count, int delay) {
     if (!ncurses_ready) return;
