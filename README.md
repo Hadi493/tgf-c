@@ -6,7 +6,7 @@
 
   <p>
     <img src="https://img.shields.io/badge/version-1.3.1-blue" alt="version" />
-    <img src="https://img.shields.io/badge/GPL-2.0%20license-blue" alt="GPL-2.0 license" />
+    <img src="https://img.shields.io/badge/GPL-3.0%20license-blue" alt="GPL-3.0 license" />
   </p>
 </div>
 
