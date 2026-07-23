@@ -124,6 +124,9 @@ int main(int argc, char **argv)
     cmd_append(&cmd, "cJSON.c");
     cmd_append(&cmd, "-O3");
     nob_cc_output(&cmd, "tgf");
+    cmd_append(&cmd, "tracker.c");
+    cmd_append(&cmd, "history.c");
+    cmd_append(&cmd, "forward.c");
     cmd_append(&cmd, "tgf.c");
 
     if (!cmd_run(&cmd)) return 1;

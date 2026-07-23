@@ -1,26 +1,125 @@
-#define TGF_IMPLEMENTATION
 #include "nob.h"
+
+#define TD_JSON_CLIENT_HEADER <td/telegram/td_json_client.h>
+#include TD_JSON_CLIENT_HEADER
+#include <signal.h>
+#include "tgf.h"
+
+int history_window_hours         = 24;
+int enable_sequential_forwarding = 0;
+int sequence_direction           = 0;
+
+int      api_id;
+char    *api_hash;
+char   **source_channels;
+int      num_sources;
+char    *dest_channel;
+char    *history_file;
+int      forward_delay_sec;
+
+int       authorized       = 0;
+int       dest_resolved    = 0;
+long long dest_chat_id     = 0;
+long long *source_chat_ids = NULL;
+char      *src_name        = "unknown";
+int       source_count     = 0;
+int       pending_req      = 0;
+
+char **history_set = NULL;
+int  history_set_size = 0;
+int  history_count = 0;
+time_t *history_time = NULL;
+
+SeqEntry seq_tracker[MAX_SEQ_TRACKER];
+int      seq_tracker_count = 0;
+
+ForwardJob *fwd_queue = NULL;
+int        fwd_queue_count = 0;
+int        fwd_queue_cap = 0;
+double     fwd_last_time   = 0;
+
+volatile bool keep_running = true;
+bool dashboard_active = false;
+char status_msg[256] = "";
+
+static int resolve_index = 0;
+static int resolve_active = 0;
+
+#ifndef TGF_NOGUI
+#include <curses.h>
+static bool ncurses_ready = false;
+
+static void ncurses_init() {
+    initscr();
+    cbreak();
+    noecho();
+    nodelay(stdscr, TRUE);
+    curs_set(0);
+    ncurses_ready = true;
+    dashboard_active = true;
+}
+
+static void ncurses_cleanup() {
+    if(ncurses_ready) endwin();
+    dashboard_active = false;
+}
+
+static int  action_msg_row = 0;
+
+static void print_dashboard(const char *dest, const char *source, int src_count, int delay) {
+    if (!ncurses_ready) return;
+    int row = 1;
+    clear();
+    mvprintw(row++, 0, "                                                      ");
+    mvprintw(row++, 0, "                                                      ");
+    mvprintw(row++, 0, "           -->TGF - TELEGRAM FEED MONITOR-->          ");
+    mvprintw(row++, 0, "       ---------------------------------------------  ");
+    mvprintw(row++, 0, "       Target Channel ........ %s ", dest              );
+    mvprintw(row++, 0, "       Source Channels ....... %d ", src_count         );
+    mvprintw(row++, 0, "       Forward Delay ......... %dsec ", delay          );
+    mvprintw(row++, 0, "       Status ................ %s ", "ACTIVE"          );
+    mvprintw(row++, 0, "       ---------------------------------------------  ");
+    action_msg_row = row;
+    mvprintw(row++, 0, "       FORWARDED from %s -> %s", source, dest        );
+    mvprintw(row++, 0, "       ---------------------------------------------  ");
+    if (status_msg[0]) {
+        mvprintw(row++, 0, "       %s", status_msg);
+        status_msg[0] = '\0';
+    }
+    mvprintw(row++, 0, "       [TGF] Running (PID: %d)", getpid());
+    mvprintw(row++, 0, "       [TGF] Stop with: Ctrl+C | kill %d | pkill tgf  ", getpid());
+    refresh();
+}
+
+static void update_action_msg(const char *source, const char *dest) {
+    if (!ncurses_ready) return;
+    mvprintw(action_msg_row, 0, "       FORWARDED from %s -> %s", source, dest);
+    refresh();
+}
+#endif
+
+void set_status(const char *msg)
+{
+    snprintf(status_msg, sizeof(status_msg), "%s", msg);
+    if (!dashboard_active) fprintf(stderr, "%s\n", msg);
+}
+
+// forward declarations
+static void on_auth_state(void *client, const char *json);
+static void on_response(void *client, const char *json, const char *extra, char *argv[]);
+static void on_update(void *client, const char *json);
+static void on_error(void *client, const char *json);
+static void resolve_next(void *client);
+static void poll_channels(void *client);
+static void handle_history_response(void *client, const char *json, long long src_chat_id);
+static int  load_config(const char *path);
 
 static void sig_handler(int sig) {
     (void)sig;
     keep_running = false;
 }
 
-static void fwd_queue_push(long long src_chat_id, const long long *ids, int count) {
-    if (fwd_queue_count >= fwd_queue_cap) {
-        int new_cap = fwd_queue_cap ? fwd_queue_cap * 2 : 1024;
-        ForwardJob *nq = realloc(fwd_queue, new_cap * sizeof(ForwardJob));
-        if (!nq) { char b[64]; snprintf(b, sizeof(b), "OOM: fwd queue (%d)", new_cap); set_status(b); return; }
-        fwd_queue = nq;
-        fwd_queue_cap = new_cap;
-    }
-    ForwardJob *j = &fwd_queue[fwd_queue_count++];
-    j->src_chat_id = src_chat_id;
-    j->count = count < MAX_FWD_IDS ? count : MAX_FWD_IDS;
-    for (int i = 0; i < j->count; i++) j->ids[i] = ids[i];
-}
-
-static void send_req(void *client, const char *type, const char *payload, const char *extra) {
+void send_req(void *client, const char *type, const char *payload, const char *extra) {
     char buf[8192];
     int n;
     if (payload && payload[0])
@@ -32,16 +131,16 @@ static void send_req(void *client, const char *type, const char *payload, const 
     pending_req++;
 }
 
-static long long cJSON_GetInt64(cJSON *obj, const char *key) {
-    cJSON *v = cJSON_GetObjectItem(obj, key);
+static long long cJSON_GetInt64(const cJSON *obj, const char *key) {
+    const cJSON *v = cJSON_GetObjectItem(obj, key);
     if (!v) return 0;
     if (cJSON_IsNumber(v)) return (long long)v->valuedouble;
     if (cJSON_IsString(v)) return atoll(v->valuestring);
     return 0;
 }
 
-static const char *cJSON_GetStr(cJSON *obj, const char *key) {
-    cJSON *v = cJSON_GetObjectItem(obj, key);
+static const char *cJSON_GetStr(const cJSON *obj, const char *key) {
+    const cJSON *v = cJSON_GetObjectItem(obj, key);
     return v && cJSON_IsString(v) ? v->valuestring : NULL;
 }
 
@@ -54,255 +153,6 @@ static void json_escape_build(char *buf, size_t size, const char *key, const cha
     }
     if (pos < (int)size - 2) { buf[pos++] = '"'; }
     buf[size - 1] = 0;
-}
-
-static unsigned int history_hash(const char *key) {
-    unsigned int h = 2166136261u;
-    while (*key) {h ^= (unsigned char)*key++; h *= 16777619u; }
-    return h;
-}
-
-static void history_rehash(int new_size) {
-    char **ns = calloc(new_size, sizeof(char *));
-    time_t *nt = calloc(new_size, sizeof(time_t));
-    if (!ns || !nt) { free(ns); free(nt); return; }
-    for (int i = 0; i < history_set_size; i++) {
-        if (history_set[i]) {
-            unsigned int idx = history_hash(history_set[i]) & (new_size - 1);
-            while (ns[idx]) idx = (idx + 1) & (new_size - 1);
-            ns[idx] = history_set[i];
-            nt[idx] = history_time[i];
-        }
-    }
-    free(history_set);
-    free(history_time);
-    history_set = ns;
-    history_time = nt;
-    history_set_size = new_size;
-}
-
-static void history_load(void) {
-    FILE *f = fopen(history_file, "r");
-    if (!f) return;
-    if (!history_set) {
-        history_set = calloc(16384, sizeof(char *));
-        history_time = calloc(16384, sizeof(time_t));
-        if (!history_set || !history_time) { free(history_set); free(history_time); history_set = NULL; history_time = NULL; fclose(f); return; }
-        history_set_size = 16384;
-    }
-    char line[128];
-    while (fgets(line, sizeof(line), f)) {
-        line[strcspn(line, "\r\n")] = 0;
-        if (!line[0]) continue;
-        char key[64]; long long ts = 0;
-        sscanf(line, "%63s %lld", key, &ts);
-        if (history_count >= history_set_size * 3 / 4)
-            history_rehash(history_set_size * 2);
-        unsigned int idx = history_hash(key) & (history_set_size - 1);
-        while (history_set[idx]) {
-            if (strcmp(history_set[idx], key) == 0) break;
-            idx = (idx + 1) & (history_set_size - 1);
-        }
-        if (history_set[idx]) continue;
-        history_set[idx] = strdup(key);
-        if (!history_set[idx]) break;
-        history_time[idx] = (time_t)ts;
-        history_count++;
-    }
-    fclose(f);
-}
-
-static int history_has(long long chat_id, long long msg_id) {
-    if (!history_set) return 0;
-    char key[64];
-    snprintf(key, sizeof(key), "%lld_%lld", chat_id, msg_id);
-    unsigned int idx = history_hash(key) & (history_set_size - 1);
-    time_t now = time(NULL);
-    while (history_set[idx]) {
-        if (strcmp(history_set[idx], key) == 0) {
-            if (history_window_hours <= 0) return 1;
-            if (history_time[idx] == 0) return 1;
-            if (now - history_time[idx] < history_window_hours * 3600) return 1;
-            return 0;
-        }
-        idx = (idx + 1) & (history_set_size - 1);
-    }
-    return 0;
-}
-
-static void history_add(long long chat_id, long long msg_id) {
-    if (!history_set) {
-        history_set = calloc(16384, sizeof(char *));
-        history_time = calloc(16384, sizeof(time_t));
-        if (!history_set || !history_time) { free(history_set); free(history_time); history_set = NULL; history_time = NULL; return; }
-        history_set_size = 16384;
-    }
-    if (history_count >= history_set_size * 3 / 4)
-        history_rehash(history_set_size * 2);
-    char key[64];
-    snprintf(key, sizeof(key), "%lld_%lld", chat_id, msg_id);
-    unsigned int idx = history_hash(key) & (history_set_size - 1);
-    while (history_set[idx]) {
-        if (strcmp(history_set[idx], key) == 0) {
-            history_time[idx] = time(NULL);
-            return;
-        }
-        idx = (idx + 1) & (history_set_size - 1);
-    }
-    history_set[idx] = strdup(key);
-    if (!history_set[idx]) return;
-    history_time[idx] = time(NULL);
-    history_count++;
-    FILE *f = fopen(history_file, "a");
-    if (f) { fprintf(f, "%s %lld\n", key, (long long)history_time[idx]); fclose(f); }
-}
-
-static void history_prune(void) {
-    if (!history_set || history_window_hours <= 0) return;
-    time_t now = time(NULL);
-    time_t cutoff = now - history_window_hours * 3600;
-    int pruned = 0;
-    for (int i = 0; i < history_set_size; i++) {
-        if (history_set[i] && history_time[i] > 0 && history_time[i] < cutoff) {
-            free(history_set[i]);
-            history_set[i] = NULL;
-            history_time[i] = 0;
-            history_count--;
-            pruned++;
-        }
-    }
-    if (!pruned) return;
-    FILE *f = fopen(history_file, "w");
-    if (!f) return;
-    for (int i = 0; i < history_set_size; i++) {
-        if (history_set[i])
-            fprintf(f, "%s %lld\n", history_set[i], (long long)history_time[i]);
-    }
-    fclose(f);
-    char b[80]; snprintf(b, sizeof(b), "History pruned %d old entries", pruned); set_status(b);
-}
-
-static void seq_tracker_load(void) {
-    FILE *f = fopen("seq_tracker.txt", "r");
-    if (!f) return;
-    char line[128];
-    while (seq_tracker_count < MAX_SEQ_TRACKER && fgets(line, sizeof(line), f)) {
-        line[strcspn(line, "\r\n")] = 0;
-        if (!line[0]) continue;
-        long long chat_id, msg_id, date, scan_id, done;
-        int n = sscanf(line, "%lld %lld %lld %lld %lld", &chat_id, &msg_id, &date, &scan_id, &done);
-        if (n >= 3) {
-            seq_tracker[seq_tracker_count].chat_id = chat_id;
-            seq_tracker[seq_tracker_count].last_msg_id = msg_id;
-            seq_tracker[seq_tracker_count].last_date = date;
-            seq_tracker[seq_tracker_count].scan_from_id = (n >= 4) ? scan_id : 0;
-            seq_tracker[seq_tracker_count].backfill_done = (n >= 5) ? (int)done : 0;
-            seq_tracker_count++;
-        }
-    }
-    fclose(f);
-}
-
-static void seq_tracker_save(void) {
-    FILE *f = fopen("seq_tracker.txt.tmp", "w");
-    if (!f) return;
-    for (int i = 0; i < seq_tracker_count; i++)
-        fprintf(f, "%lld %lld %lld %lld %d\n", seq_tracker[i].chat_id, seq_tracker[i].last_msg_id, seq_tracker[i].last_date, seq_tracker[i].scan_from_id, seq_tracker[i].backfill_done);
-    fclose(f);
-    rename("seq_tracker.txt.tmp", "seq_tracker.txt");
-}
-
-static void seq_tracker_set(long long chat_id, long long msg_id, long long date) {
-    for (int i = 0; i < seq_tracker_count; i++) {
-        if (seq_tracker[i].chat_id == chat_id) {
-            if (msg_id > seq_tracker[i].last_msg_id) seq_tracker[i].last_msg_id = msg_id;
-            if (date > seq_tracker[i].last_date) seq_tracker[i].last_date = date;
-            return;
-        }
-    }
-    if (seq_tracker_count < MAX_SEQ_TRACKER) {
-        seq_tracker[seq_tracker_count].chat_id = chat_id;
-        seq_tracker[seq_tracker_count].last_msg_id = msg_id;
-        seq_tracker[seq_tracker_count].last_date = date;
-        seq_tracker[seq_tracker_count].scan_from_id = 0;
-        seq_tracker[seq_tracker_count].pending = NULL;
-        seq_tracker[seq_tracker_count].pending_count = 0;
-        seq_tracker[seq_tracker_count].pending_cap = 0;
-        seq_tracker_count++;
-    }
-}
-
-static long long seq_tracker_get_scan_from(long long chat_id) {
-    for (int i = 0; i < seq_tracker_count; i++)
-        if (seq_tracker[i].chat_id == chat_id)
-            return seq_tracker[i].scan_from_id;
-    return 0;
-}
-
-static void seq_tracker_set_scan_from(long long chat_id, long long msg_id) {
-    for (int i = 0; i < seq_tracker_count; i++) {
-        if (seq_tracker[i].chat_id == chat_id) {
-            seq_tracker[i].scan_from_id = msg_id;
-            return;
-        }
-    }
-    if (seq_tracker_count < MAX_SEQ_TRACKER) {
-        seq_tracker[seq_tracker_count].chat_id = chat_id;
-        seq_tracker[seq_tracker_count].last_msg_id = 0;
-        seq_tracker[seq_tracker_count].last_date = 0;
-        seq_tracker[seq_tracker_count].scan_from_id = msg_id;
-        seq_tracker[seq_tracker_count].backfill_done = 0;
-        seq_tracker[seq_tracker_count].pending = NULL;
-        seq_tracker[seq_tracker_count].pending_count = 0;
-        seq_tracker[seq_tracker_count].pending_cap = 0;
-        seq_tracker_count++;
-    }
-}
-
-static int seq_tracker_is_backfill_done(long long chat_id) {
-    for (int i = 0; i < seq_tracker_count; i++)
-        if (seq_tracker[i].chat_id == chat_id)
-            return seq_tracker[i].backfill_done;
-    return 0;
-}
-
-static void seq_tracker_set_backfill_done(long long chat_id, int done) {
-    for (int i = 0; i < seq_tracker_count; i++) {
-        if (seq_tracker[i].chat_id == chat_id) {
-            seq_tracker[i].backfill_done = done;
-            return;
-        }
-    }
-    if (seq_tracker_count < MAX_SEQ_TRACKER) {
-        seq_tracker[seq_tracker_count].chat_id = chat_id;
-        seq_tracker[seq_tracker_count].last_msg_id = 0;
-        seq_tracker[seq_tracker_count].last_date = 0;
-        seq_tracker[seq_tracker_count].scan_from_id = 0;
-        seq_tracker[seq_tracker_count].backfill_done = done;
-        seq_tracker[seq_tracker_count].pending = NULL;
-        seq_tracker[seq_tracker_count].pending_count = 0;
-        seq_tracker[seq_tracker_count].pending_cap = 0;
-        seq_tracker_count++;
-    }
-}
-
-static void seq_tracker_pending_append(long long chat_id, PendingMsg msg) {
-    for (int i = 0; i < seq_tracker_count; i++) {
-        if (seq_tracker[i].chat_id == chat_id) {
-            int n = seq_tracker[i].pending_count;
-            int cap = seq_tracker[i].pending_cap;
-            if (n >= cap) {
-                cap = cap ? cap * 2 : 512;
-                PendingMsg *np = realloc(seq_tracker[i].pending, cap * sizeof(PendingMsg));
-                if (!np) { set_status("OOM in pending_append"); return; }
-                seq_tracker[i].pending = np;
-                seq_tracker[i].pending_cap = cap;
-            }
-            seq_tracker[i].pending[n] = msg;
-            seq_tracker[i].pending_count = n + 1;
-            return;
-        }
-    }
 }
 
 static void on_auth_state(void *client, const char *json) {
@@ -361,9 +211,6 @@ static void on_auth_state(void *client, const char *json) {
     }
 }
 
-static int resolve_index = 0;
-static int resolve_active = 0;
-
 static void resolve_next(void *client) {
     while (resolve_index < num_sources) {
         const char *name = source_channels[resolve_index];
@@ -402,22 +249,12 @@ static void on_response(void *client, const char *json, const char *extra, char 
     if (strncmp(extra, "resolve_", 8) == 0) {
         cJSON *root = cJSON_Parse(json);
         if (!root) return;
-        cJSON *type_item = cJSON_GetObjectItem(root, "@type");
+        const cJSON *type_item = cJSON_GetObjectItem(root, "@type");
         if (type_item && cJSON_IsString(type_item) && strcmp(type_item->valuestring, "error") == 0) {
             cJSON_Delete(root);
             return;
         }
         long long chat_id = cJSON_GetInt64(root, "id");
-        const char *title = cJSON_GetStr(root, "title");
-        char user_name[128] = "";
-        if (!title) {
-            const char *fn = cJSON_GetStr(root, "first_name");
-            const char *ln = cJSON_GetStr(root, "last_name");
-            if (fn) {
-                snprintf(user_name, sizeof(user_name), "%s %s", fn, ln ? ln : "");
-                title = user_name;
-            } else { title = "(unknown)"; }
-        }
         if (strcmp(extra, "resolve_dest") == 0) {
             dest_chat_id = chat_id;
             dest_resolved = 1;
@@ -446,9 +283,9 @@ static void on_response(void *client, const char *json, const char *extra, char 
     if (strncmp(extra, "fwd_", 4) == 0) {
         cJSON *root = cJSON_Parse(json);
         if (!root) return;
-        cJSON *type_item = cJSON_GetObjectItem(root, "@type");
+        const cJSON *type_item = cJSON_GetObjectItem(root, "@type");
         if (type_item && cJSON_IsString(type_item) && strcmp(type_item->valuestring, "error") == 0) {
-            cJSON *m = cJSON_GetObjectItem(root, "message");
+            const cJSON *m = cJSON_GetObjectItem(root, "message");
             { char b[128]; snprintf(b, sizeof(b), "Forward fail [%s]: %s", extra, m ? m->valuestring : "?"); set_status(b); }
         } else {
             long long src_chat_id = 0;
@@ -468,100 +305,12 @@ static void on_response(void *client, const char *json, const char *extra, char 
     }
 }
 
-typedef PendingMsg MsgInfo;
-
-static int seq_cmp_asc(const void *a, const void *b) {
-    const MsgInfo *ma = (const MsgInfo *)a, *mb = (const MsgInfo *)b;
-    if (ma->date != mb->date) return ma->date > mb->date ? 1 : -1;
-    if (ma->id  != mb->id)   return ma->id  > mb->id   ? 1 : -1;
-    return 0;
-}
-
-static int seq_cmp_desc(const void *a, const void *b) {
-    const MsgInfo *ma = (const MsgInfo *)a, *mb = (const MsgInfo *)b;
-    if (ma->date != mb->date) return ma->date < mb->date ? 1 : -1;
-    if (ma->id  != mb->id)   return ma->id  < mb->id   ? 1 : -1;
-    return 0;
-}
-
-static void process_msgs(long long src_chat_id, MsgInfo *msgs, int count) {
-    if (count == 0) return;
-    if (enable_sequential_forwarding && count > 1) {
-        int asc = (sequence_direction == 0);
-        qsort(msgs, count, sizeof(MsgInfo), asc ? seq_cmp_asc : seq_cmp_desc);
-    }
-    int *grouped = calloc(count, sizeof(int));
-    for (int i = 0; i < count; i++) {
-        if (grouped[i]) continue;
-        if (msgs[i].album_id == 0) {
-            long long ids[256];
-            int id_count = 0;
-            if (msgs[i].reply_to_msg_id) ids[id_count++] = msgs[i].reply_to_msg_id;
-            ids[id_count++] = msgs[i].id;
-            for (int k = 0; k < count; k++) {
-                if (!grouped[k] && k != i && msgs[k].reply_to_msg_id == msgs[i].id && id_count < 256) {
-                    ids[id_count++] = msgs[k].id;
-                }
-            }
-            for (int a = 0; a < id_count; a++)
-                for (int b = a + 1; b < id_count; b++)
-                    if (ids[a] > ids[b]) { long long tmp = ids[a]; ids[a] = ids[b]; ids[b] = tmp; }
-            fwd_queue_push(src_chat_id, ids, id_count);
-            history_add(src_chat_id, msgs[i].id);
-            if (enable_sequential_forwarding) seq_tracker_set(src_chat_id, msgs[i].id, msgs[i].date);
-            grouped[i] = 1;
-            for (int k = 0; k < count; k++) {
-                if (!grouped[k] && k != i && msgs[k].reply_to_msg_id == msgs[i].id) {
-                    history_add(src_chat_id, msgs[k].id);
-                    if (enable_sequential_forwarding) seq_tracker_set(src_chat_id, msgs[k].id, msgs[k].date);
-                    grouped[k] = 1;
-                }
-            }
-        } else {
-            long long album_id = msgs[i].album_id;
-            int album_indices[256];
-            int album_count = 0;
-            for (int j = 0; j < count; j++)
-                if (!grouped[j] && msgs[j].album_id == album_id) album_indices[album_count++] = j;
-            for (int a = 0; a < album_count; a++)
-                for (int b = a + 1; b < album_count; b++)
-                    if (msgs[album_indices[a]].id > msgs[album_indices[b]].id) {
-                        int tmp = album_indices[a]; album_indices[a] = album_indices[b]; album_indices[b] = tmp;
-                    }
-            long long album_ids[256];
-            for (int b = 0; b < album_count; b++) album_ids[b] = msgs[album_indices[b]].id;
-            fwd_queue_push(src_chat_id, album_ids, album_count);
-            for (int b = 0; b < album_count; b++) {
-                history_add(src_chat_id, msgs[album_indices[b]].id);
-                if (enable_sequential_forwarding) seq_tracker_set(src_chat_id, msgs[album_indices[b]].id, msgs[album_indices[b]].date);
-                grouped[album_indices[b]] = 1;
-            }
-        }
-    }
-    free(grouped);
-    if (enable_sequential_forwarding) seq_tracker_save();
-}
-
-static void flush_pending(long long src_chat_id) {
-    for (int i = 0; i < seq_tracker_count; i++) {
-        if (seq_tracker[i].chat_id == src_chat_id) {
-            if (seq_tracker[i].pending_count > 0)
-                process_msgs(src_chat_id, seq_tracker[i].pending, seq_tracker[i].pending_count);
-            free(seq_tracker[i].pending);
-            seq_tracker[i].pending = NULL;
-            seq_tracker[i].pending_count = 0;
-            seq_tracker[i].pending_cap = 0;
-            return;
-        }
-    }
-}
-
 static void handle_history_response(void *client, const char *json, long long src_chat_id) {
     (void)client;
     cJSON *root = cJSON_Parse(json);
     if (!root) { set_status("Failed to parse history JSON"); return; }
 
-    cJSON *msgs = cJSON_GetObjectItem(root, "messages");
+    const cJSON *msgs = cJSON_GetObjectItem(root, "messages");
     if (!msgs || !cJSON_IsArray(msgs)) { cJSON_Delete(root); return; }
 
     int total = cJSON_GetArraySize(msgs);
@@ -605,7 +354,7 @@ static void handle_history_response(void *client, const char *json, long long sr
                 seq_tracker_count++;
             }
         }
-        for (cJSON *m = msgs->child; m && i < total; m = m->next, i++) {
+        for (const cJSON *m = msgs->child; m && i < total; m = m->next, i++) {
             long long msg_id = cJSON_GetInt64(m, "id");
             batch_oldest_id = msg_id;
             long long album_id = cJSON_GetInt64(m, "media_album_id");
@@ -615,7 +364,7 @@ static void handle_history_response(void *client, const char *json, long long sr
             if (cutoff && msg_date < cutoff) { cutoff_filtered++; continue; }
             PendingMsg pm;
             pm.id = msg_id; pm.album_id = album_id; pm.date = msg_date; pm.reply_to_msg_id = 0;
-            cJSON *reply_to = cJSON_GetObjectItem(m, "reply_to");
+            const cJSON *reply_to = cJSON_GetObjectItem(m, "reply_to");
             if (reply_to) pm.reply_to_msg_id = cJSON_GetInt64(reply_to, "message_id");
             seq_tracker_pending_append(src_chat_id, pm);
             new_count++;
@@ -656,11 +405,12 @@ static void handle_history_response(void *client, const char *json, long long sr
         cJSON_Delete(root); return;
     }
 
-    MsgInfo *new_msgs = calloc(total, sizeof(MsgInfo));
+    PendingMsg *new_msgs = calloc(total, sizeof(PendingMsg));
+    if (!new_msgs) { set_status("OOM in history handler"); cJSON_Delete(root); return; }
     new_count = 0;
     cutoff_filtered = 0;
     i = 0;
-    for (cJSON *m = msgs->child; m && i < total; m = m->next, i++) {
+    for (const cJSON *m = msgs->child; m && i < total; m = m->next, i++) {
         long long msg_id   = cJSON_GetInt64(m, "id");
         batch_oldest_id = msg_id;
         long long album_id = cJSON_GetInt64(m, "media_album_id");
@@ -672,7 +422,7 @@ static void handle_history_response(void *client, const char *json, long long sr
         new_msgs[new_count].id       = msg_id;
         new_msgs[new_count].album_id = album_id;
         new_msgs[new_count].date     = msg_date;
-        cJSON *reply_to = cJSON_GetObjectItem(m, "reply_to");
+        const cJSON *reply_to = cJSON_GetObjectItem(m, "reply_to");
         if (reply_to) new_msgs[new_count].reply_to_msg_id = cJSON_GetInt64(reply_to, "message_id");
         new_count++;
     }
@@ -699,33 +449,6 @@ static void poll_channels(void *client) {
                  chat_id, MSG_LIMIT, from_id);
         send_req(client, "getChatHistory", payload, extra);
     }
-}
-
-static int process_fwd_queue(void *client) {
-    if (fwd_queue_count == 0) return 0;
-    double now = (double)time(NULL);
-    if (now - fwd_last_time < forward_delay_sec) return 0;
-
-    ForwardJob *j = &fwd_queue[0];
-    char ids_str[8192] = "";
-    int pos = 0;
-    for (int i = 0; i < j->count; i++)
-        APPEND_ID(ids_str, pos, sizeof(ids_str), j->ids[i]);
-
-    char extra[64];
-    if (j->count == 1)
-        snprintf(extra, sizeof(extra), "fwd_%lld_%lld", j->src_chat_id, j->ids[0]);
-    else
-        snprintf(extra, sizeof(extra), "fwd_%lld_batch", j->src_chat_id);
-
-    char payload[16384];
-    snprintf(payload, sizeof(payload), "\"chat_id\":%lld,\"from_chat_id\":%lld,\"message_ids\":[%s]", dest_chat_id, j->src_chat_id, ids_str);
-    send_req(client, "forwardMessages", payload, extra);
-
-    fwd_queue_count--;
-    for (int i = 0; i < fwd_queue_count; i++) fwd_queue[i] = fwd_queue[i + 1];
-    fwd_last_time = now;
-    return 1;
 }
 
 static void on_update(void *client, const char *json) {
@@ -769,13 +492,16 @@ static int load_config(const char *path) {
     v = cJSON_GetObjectItem(root, "api_hash");
     if (!v || !cJSON_IsString(v)) { fprintf(stderr, "Missing api_hash\n"); cJSON_Delete(root); return -1; }
     api_hash = strdup(v->valuestring);
+    if (!api_hash) { fprintf(stderr, "OOM\n"); cJSON_Delete(root); return -1; }
 
     v = cJSON_GetObjectItem(root, "dest_channel");
     if (!v || !cJSON_IsString(v)) { fprintf(stderr, "Missing dest_channel\n"); cJSON_Delete(root); return -1; }
     dest_channel = strdup(v->valuestring);
+    if (!dest_channel) { fprintf(stderr, "OOM\n"); cJSON_Delete(root); return -1; }
 
     v = cJSON_GetObjectItem(root, "history_file");
     history_file = v && cJSON_IsString(v) ? strdup(v->valuestring) : strdup("history.txt");
+    if (!history_file) { fprintf(stderr, "OOM\n"); cJSON_Delete(root); return -1; }
 
     v = cJSON_GetObjectItem(root, "forward_delay_sec");
     forward_delay_sec = v && cJSON_IsNumber(v) ? (int)v->valuedouble : 1;
@@ -796,9 +522,11 @@ static int load_config(const char *path) {
     if (!v || !cJSON_IsArray(v)) { fprintf(stderr, "Missing source_channels array\n"); cJSON_Delete(root); return -1; }
     num_sources = cJSON_GetArraySize(v);
     source_channels = calloc(num_sources, sizeof(char *));
+    if (!source_channels) { fprintf(stderr, "OOM\n"); cJSON_Delete(root); return -1; }
     for (int i = 0; i < num_sources; i++) {
-        cJSON *elem = cJSON_GetArrayItem(v, i);
+        const cJSON *elem = cJSON_GetArrayItem(v, i);
         source_channels[i] = elem && cJSON_IsString(elem) ? strdup(elem->valuestring) : strdup("");
+        if (!source_channels[i]) { source_channels[i] = strdup(""); }
     }
 
     cJSON_Delete(root);
