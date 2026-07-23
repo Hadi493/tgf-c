@@ -2,7 +2,10 @@
 nob
 tgf
 config.json
-history.txt
+*.txt
+*.bak
 tdlib_db
 tdlib_files
 lib/td/build/
+doc/
+Issues.md
