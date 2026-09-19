@@ -1,3 +1,5 @@
+
+
 <div align="center">
   <img src="tgf.png" width="166" height="144" alt="TGF" />
   <h1>TGF - Telegram Feed</h1>
@@ -68,6 +70,7 @@ Edit `config.json`:
 | `api_id` / `api_hash` | From [my.telegram.org](https://my.telegram.org/apps) |
 | `source_channels` | Channels to monitor |
 | `dest_channel` | Where to forward (`@me` for Saved Messages) |
+| `history_file` | File used to track forwarded messages (default: `history.txt`) |
 | `forward_delay_sec` | Seconds between forwards (default: 1) |
 | `enable_sequential_forwarding` | Enable sequential (ordered) forwarding (default: false) |
 | `sequence_direction` | Sort order: `"asc"` (old→new) or `"desc"` (new→old) (default: asc) |
