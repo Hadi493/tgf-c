@@ -45,13 +45,13 @@ Notes:
 - No range checks: negative/zero delay disables spacing; negative/zero window
   disables cutoff and expiry; very large arrays are attempted with `calloc`.
 - Unknown keys are ignored.
-- `history_window_hours` is not present in `config.json.example`, so a user
-  editing the example silently gets 24.
-- The example contains a `//` comment **inside the array** and is therefore not
-  valid JSON; following the README quick start without removing it exits with
-  `Invalid JSON in config.json` (TD-18). Trailing text after a complete root
-  value is ignored, because `cJSON_Parse` does not require the input to be
-  fully consumed (`cJSON.c:1227-1230`).
+- `config.json.example` is valid JSON and includes `history_window_hours`
+  (TD-18, fixed). `api_id` uses the numeric placeholder `123456`; replace it
+  and `api_hash` with real credentials before running.
+- Trailing text after a complete root value is ignored, because `cJSON_Parse`
+  does not require the input to be fully consumed (`cJSON.c:1227-1230`).
+  Comments are still rejected: a `//` inside a config exits with
+  `Invalid JSON in config.json`.
 
 ### 2.1 Error messages
 
@@ -100,9 +100,9 @@ Example: `-1001394595107_46548385792 1794488266`.
   first** (`"w"`), so a crash during rewrite loses the file.
 - Load requires only a whitespace-delimited key; a missing timestamp becomes 0.
   Lines longer than 127 bytes are split by `fgets`, producing garbage entries.
-- A non-empty line that does not start with a token (e.g. only spaces) leaves
-  the local `key` buffer unwritten before hashing → undefined behavior on
-  corrupt input (`src/history.c:41-46`).
+- A line with no parsable token (e.g. only spaces) is skipped at load
+  (`src/history.c:42`); the key buffer is never hashed uninitialized
+  (TD-29, fixed).
 - Missing file is normal. A missing directory makes appends fail silently
   (dedupe then works only in memory).
 
@@ -170,7 +170,7 @@ migration are TDLib’s concern. Deleting `tdlib_db/` forces a new login.
 |---|---|
 | Empty `config.json` | exit 1, no message |
 | Truncated JSON | `Invalid JSON`, exit 1 |
-| Comment inside the root value (as in the example) | `Invalid JSON`, exit 1 |
+| Comment inside the root value | `Invalid JSON`, exit 1 |
 | Trailing text after a complete root value | Accepted; the trailing bytes are ignored |
 | `"api_id": "123"` | `Missing api_id`, exit 1 |
 | `"enable_sequential_forwarding": "true"` | Treated as false |
@@ -186,8 +186,8 @@ migration are TDLib’s concern. Deleting `tdlib_db/` forces a new login.
 
 | ID | Scenario | Expected |
 |---|---|---|
-| SC-05-01 | `cp config.json.example config.json` then run | `Invalid JSON in config.json`, exit 1 |
-| SC-05-02 | Remove the comment and fill credentials | Starts normally |
+| SC-05-01 | `cp config.json.example config.json` then run with placeholders | Config accepted (valid JSON); auth proceeds to the phone prompt — credentials are not validated locally |
+| SC-05-02 | Fill real credentials | Starts normally |
 | SC-05-03 | Add `"API_ID": …` instead of `api_id` | Accepted (case-insensitive) |
 | SC-05-04 | Use string `"true"` for sequential | Backfill does not start |
 | SC-05-05 | Delete `history.txt` between runs | Duplicates possible within the window |
@@ -202,3 +202,5 @@ migration are TDLib’s concern. Deleting `tdlib_db/` forces a new login.
 | 2026-11-17 | Corrected `tgf.c` and `.gitignore` citations to the working tree |
 | 2026-11-17 | Step 2: moved config/storage into `src/`; refreshed citations |
 | 2026-11-19 | Step 4.1 completion: empty source array is now fatal at startup (01 §1); refreshed citations; `.gitignore` gained `tests/tgf_tests` |
+| 2026-11-19 | TD-18 fixed: config.json.example is valid JSON with history_window_hours and a numeric api_id placeholder; README license/deps corrected; TD-29 load guard documented; SC-05-01/02 updated |
+| 2026-11-19 | SC-05-01 expectation corrected to observed behavior: placeholder credentials pass local config validation; TDLib proceeds to the phone prompt |

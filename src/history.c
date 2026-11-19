@@ -39,7 +39,7 @@ void history_store_load(HistoryStore *hs, const Config *cfg) {
         line[strcspn(line, "\r\n")] = 0;
         if (!line[0]) continue;
         char key[64]; long long ts = 0;
-        sscanf(line, "%63s %lld", key, &ts);
+        if (sscanf(line, "%63s %lld", key, &ts) < 1) continue;
         if (hs->count >= hs->set_size * 3 / 4)
             history_rehash(hs, hs->set_size * 2);
         unsigned int idx = history_hash(key) & (hs->set_size - 1);
@@ -116,6 +116,7 @@ void history_store_prune(HistoryStore *hs, const Config *cfg) {
         }
     }
     if (!pruned) return;
+    history_rehash(hs, hs->set_size);
     FILE *f = fopen(cfg->history_file, "w");
     if (!f) return;
     for (int i = 0; i < hs->set_size; i++) {

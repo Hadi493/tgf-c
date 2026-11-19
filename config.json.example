@@ -1,14 +1,1 @@
-{
-    "api_id": YOUR_API_ID,
-    "api_hash": "YOUR_API_HASH",
-    "source_channels": [
-        // add channels like this
-        "channel1",
-        "channel2"
-    ],
-    "enable_sequential_forwarding": true,
-    "sequence_direction": "asc",
-    "dest_channel": "@me",
-    "history_file": "history.txt",
-    "forward_delay_sec": 10
-}
+{"api_hash": "YOUR_API_HASH", "api_id": 123456, "dest_channel": "@me", "enable_sequential_forwarding": true, "forward_delay_sec": 10, "history_file": "history.txt", "history_window_hours": 24, "sequence_direction": "asc", "source_channels": ["channel1", "channel2"]}

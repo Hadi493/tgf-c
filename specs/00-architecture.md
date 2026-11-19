@@ -30,9 +30,9 @@ TDLib is pinned as a git submodule at `v1.8.0-10143-ga17f87c4c`
                        ┌────────────────────────────────────┐
                        │             tgf (process)          │
                        │                                    │
- config.json ─────────►│ config loader ─► Runtime           │
+ config.json ─────────►│ config loader ─► Runtime         │
                        │                                    │
- stdin ───────────────►│ auth prompts ─► transport_send           │
+ stdin ───────────────►│ auth prompts ─► transport_send   │
                        │                                    │
                        │ main loop (1 s tick)               │
                        │  ├ decode @type / @extra           │

@@ -111,17 +111,20 @@ Notes:
 - Collision: linear probing with mask `size - 1`; size is always a power of
   two (`src/history.c:15-16`, `45`, `63`).
 - Load factor: rehash to double size when
-  `history_count >= history_set_size * 3 / 4` before insertion
+  `count >= set_size * 3 / 4` before insertion
   (`src/history.c:43-44`, `84-85`).
 - Allocation: 16,384 slots on first use (`src/history.c:32`, `79`).
-- Entries are `strdup`ed; `history_time[i]` is the enqueue timestamp.
+- Entries are `strdup`ed; `time[i]` is the enqueue timestamp.
 
 ### 3.2 Load
 
 `history_store_load` (`src/history.c:28-57`):
 
-- Missing file → return with `history_set == NULL` (all lookups return 0).
-- Reads lines up to 127 chars; format `"%63s %lld"`; blank lines skipped.
+- Missing file → return with the table absent (`set == NULL`; all lookups
+  return 0).
+- Reads lines up to 127 chars; format `"%63s %lld"`; blank lines and lines
+  with no parsable token (e.g. whitespace-only) are skipped — the key buffer
+  is never hashed uninitialized (TD-29, fixed).
 - Duplicate keys are skipped (first timestamp wins).
 - A line with an unparsable timestamp yields `ts = 0`.
 - Does not apply the window at load time; expiry is evaluated on lookup.
@@ -146,7 +149,7 @@ An expired entry is **not removed by lookup**; it stays until pruning.
 - Allocate if needed.
 - Rehash at the load-factor threshold.
 - If the key exists: refresh its timestamp to `now`, do not append a file line.
-- Else: insert, set timestamp `now`, increment `history_count`, append
+- Else: insert, set timestamp `now`, increment `count`, append
   `"<key> <now>\n"` to `history_file`.
 - Called from `process_msgs` **before** the job can be dispatched
   (`src/forward.c:122-124`). Marking therefore means "enqueued", not
@@ -163,16 +166,21 @@ every 20 minutes after that.
 
 - No-op when the table is absent or `history_window_hours <= 0`.
 - For every slot with `timestamp > 0 && timestamp < now - window*3600`:
-  free, set slot to NULL, decrement `history_count`.
-- If anything was pruned, rewrite the file with live entries only.
+  free, set slot to NULL, decrement `count`.
+- If anything was pruned, rehash the survivors into a fresh table of the same
+  size (`history_rehash`), eliminating probe-chain holes (TD-04, fixed), then
+  rewrite the file with live entries only. If the rehash allocation fails,
+  `ui_oom` reports and the holes remain until the next successful prune
+  (degraded, pre-fix behavior).
 - Publish `History pruned <n> old entries`.
 
-### 3.6 Known defect: deletion breaks probe chains
+### 3.6 Probe-chain repair (TD-04, fixed)
 
 Setting a slot to NULL in an open-addressing linear-probe table terminates
 lookup chains for any key that hashed at or before that slot and resides after
-it. After the first prune, such keys are reported as unseen and can be
-forwarded again (TD-04). Entries with `timestamp == 0` are never pruned, which
+it. Before the fix, such keys were reported as unseen after a prune and could
+be forwarded again. Prune now rehashes survivors into a fresh table (§3.5), so
+live keys stay reachable. Entries with `timestamp == 0` are never pruned, which
 masks nothing but leaks unbounded file lines.
 
 ## 4. Interaction between cutoff and dedupe
@@ -204,6 +212,7 @@ Changing `history_window_hours` between runs changes both behaviors at once:
 | Message `date` missing/0 | `0 < cutoff` → dropped when a cutoff is active |
 | `media_album_id` missing | Album id 0 (treated as single message) |
 | Table full after failed rehash | Undefined probe behavior; no guard (TD-19) |
+| Whitespace-only `history.txt` line | Skipped at load (TD-29, fixed) |
 
 ## 6. Acceptance scenarios
 
@@ -213,7 +222,7 @@ Changing `history_window_hours` between runs changes both behaviors at once:
 | SC-02-02 | Immediately restart | No duplicates; `New: 0 msgs` |
 | SC-02-03 | Set `history_window_hours` smaller than a post’s age | Post not forwarded; cutoff line reflects it |
 | SC-02-04 | Set `history_window_hours: 0` | Old posts are forwarded; no prune messages ever |
-| SC-02-05 | Run 20+ min | `History pruned N old entries` once expired entries exist |
+| SC-02-05 | Run 20+ min | `History pruned N old entries` once expired entries exist; live messages are not re-forwarded afterwards (probe chains repaired) |
 | SC-02-06 | Corrupt a timestamp to `abc` | Entry is treated as permanent (timestamp 0) |
 | SC-02-07 | Delete `history.txt` but keep tracker | Non-sequential: duplicates possible; sequential complete: duplicates possible (04) |
 
@@ -226,3 +235,4 @@ Changing `history_window_hours` between runs changes both behaviors at once:
 | 2026-11-17 | Step 2: moved polling/history into `src/`; refreshed citations |
 | 2026-11-18 | Documented single `root` ownership (`main.c` parses + `cJSON_Delete` once; handlers must not free `root`) and removed the double-`cJSON_Delete` on `history_response` backfill/complete/OOM paths in `src/poll.c` |
 | 2026-11-19 | As-built refresh: normal path no longer writes `batch_oldest_id` (TD-24); OOM status routed via `ui_oom` (TD-19, same text); refreshed citations |
+| 2026-11-19 | Step 4.2: prune rehashes survivors (TD-04 fixed — fewer duplicates); load skips lines with no parsable token (TD-29 fixed); refreshed store field names; SC-02-05 extended |

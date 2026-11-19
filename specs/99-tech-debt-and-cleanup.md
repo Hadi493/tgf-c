@@ -44,12 +44,15 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 - **Fix gate:** durable queue or a “flush before exit” contract that waits for
   responses; both are behavior changes to 01 §6 and 03 §5.
 
-#### TD-04 — Hash deletion creates probe-chain holes
-- **Evidence:** `src/history.c:104-118` NULLs slots in a linear-probing table.
-- **Impact:** after pruning, some live keys become unreachable → duplicate
+#### TD-04 — Hash deletion creates probe-chain holes — **ADDRESSED (Step 4.2)**
+- **Evidence (pre-fix):** prune NULLed slots in a linear-probing table,
+  breaking lookup chains for colliding survivors.
+- **Impact:** after pruning, some live keys became unreachable → duplicate
   forwards.
-- **Fix gate:** tombstones, backward-shift deletion, or full rehash on prune.
-  Behavior change (fewer duplicates); amend 02 §3.5.
+- **Resolution:** prune rehashes survivors into a fresh same-size table via
+  `history_rehash` (`src/history.c:119`); 02 §3.5/§3.6 amended; the
+  characterization test now asserts survivors stay reachable. Rehash OOM
+  leaves holes until the next successful prune (reported via `ui_oom`).
 
 #### TD-05 — Failed resolution is invisible and permanent — **ADDRESSED in Step 4.1**
 - **Evidence:** `src/main.c:23-72` (no retry), `src/main.c:121` (gate just stays
@@ -124,9 +127,10 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 
 #### TD-17 — Test coverage is partial; CI added
 - **Evidence:** `tests/test_main.c` + `./nob test` cover grouping/order/caps,
-  dedupe add/has/expire/prune (including the TD-04 hole), tracker round-trip
+  dedupe add/has/expire/prune (including TD-04 chain repair and TD-29
+  malformed-line skip), tracker round-trip
   and capacity, dispatch tagging/pacing, the config table from 05 §2, and
-  resolution cursor/summary/handler behavior (42 tests, 175 checks). Missing:
+  resolution cursor/summary/handler behavior (43 tests, 179 checks). Missing:
   backfill completion/state transitions, the history handler, UI, and
   main-loop dispatch (`request_id_from_extra` is static in `src/main.c`; a
   `resolve_dest` misrouting regression there was caught only by live
@@ -163,11 +167,13 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 - **Fix gate:** temp file + rename (like the tracker); behavior-preserving for
   normal operation.
 
-#### TD-29 — Uninitialized key on corrupt history lines
-- **Evidence:** `src/history.c:41-46`; `sscanf` may write nothing for a
-  whitespace-only line and `key` is then hashed.
+#### TD-29 — Uninitialized key on corrupt history lines — **ADDRESSED (Step 4.2)**
+- **Evidence (pre-fix):** `sscanf` could write nothing for a whitespace-only
+  line and the uninitialized `key` was hashed.
 - **Impact:** undefined behavior on a corrupted or hand-edited file.
-- **Fix gate:** reject malformed lines; behavior change only for invalid input.
+- **Resolution:** load skips lines where `sscanf` returns < 1
+  (`src/history.c:42`); 02 §3.2 and 05 §3.1 amended; behavior change only for
+  invalid input.
 
 ### P2
 
@@ -208,13 +214,14 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 - **Fix gate:** parse ids from raw text or patch cJSON; make key lookup
   case-sensitive; amend 05 §2.
 
-#### TD-18 — Documentation and packaging drift
-- **Evidence:** `README.md:87` says GPLv2 while `LICENSE` is GPLv3;
-  `README.md:26` “no system deps” ignores ncurses/CMake;
-  `config.json.example` has a `//` comment (invalid JSON) and omits
-  `history_window_hours`; README version lags git history.
+#### TD-18 — Documentation and packaging drift — **ADDRESSED**
+- **Evidence (pre-fix):** README said GPLv2 while `LICENSE` is GPLv3;
+  “no system deps” ignored ncurses/CMake; `config.json.example` was invalid
+  JSON (comment, unquoted `api_id`) and omitted `history_window_hours`.
 - **Impact:** first-run failure and wrong expectations.
-- **Fix:** docs-only change; no spec impact except 05 §2.
+- **Resolution:** README license/deps/requirements/contributing corrected;
+  example is valid JSON with all keys; 05 §2/§7/§8 amended. Version badge
+  left at 1.3.1 — bumping/tagging is a release action (CONTRIBUTING).
 
 #### TD-21 — Windows build probe and path assumptions
 - **Evidence:** `nob.c:50-55` redirects to `/dev/null` under `cmd.exe`;
@@ -279,7 +286,8 @@ the step is too large.
   - `process_msgs`: wire order, sequential asc/desc, reply chains and parent
     duplication, album grouping/ordering/split, child and queue caps, enqueue
     marking;
-  - `history.c`: add/has, window expiry, prune, and the TD-04 tombstone hole;
+  - `history.c`: add/has, window expiry, prune with probe-chain repair
+    (TD-04 fixed), malformed-line skip at load (TD-29 fixed);
   - `tracker.c`: 3/4/5-field load, save round-trip, 128-entry cap, pending
     append/flush;
   - dispatch: `forwardMessages` payload, single/batch tags, delay gate;
@@ -333,7 +341,7 @@ Update `nob.c` source list; keep the same binary name and CLI.
 
 **Done:** all ten modules plus `src/tgf.h` exist; `nob.c` compiles them with
 `-I.`/`-Isrc`; `tests/test_main.c` stubs `transport_send`/`transport_destroy`/
-`ui_status`/`ui_oom`/`ui_forwarded`. No behavior change; 175 checks pass.
+`ui_status`/`ui_oom`/`ui_forwarded`. No behavior change; 179 checks pass.
 
 ### Step 3 — Structural cleanups (behavior-preserving) — **mostly done**
 - Done: dead code removed (TD-24, partial — see register).
@@ -350,8 +358,8 @@ Update `nob.c` source list; keep the same binary name and CLI.
 Order chosen by user risk:
 
 1. **Done (Step 4.1, restored 2026-11-19):** resolution fail-fast/visible errors (TD-05, TD-07).
-2. **Hash tombstones + malformed-line rejection** (TD-04, TD-29) — fixes
-   duplicate forwards.
+2. **Done (Step 4.2):** prune rehash + malformed-line rejection (TD-04,
+   TD-29) — fixes duplicate forwards.
 3. **Delivery-time dedupe + retry + flood-wait** (TD-01, TD-06) — largest
    semantic change; needs a delivery-state model.
 4. **Durable pending + queue** (TD-02, TD-03, TD-27) — depends on (3).
@@ -399,3 +407,4 @@ structural refactor would violate Phase 2:
 | 2026-11-17 | Step 2: split into `src/`; refreshed citations; marked Step 2 done |
 | 2026-11-18 | TD-19 design: add `ui_oom(const char *msg)` in `src/ui.c` (declared in `src/tgf.h`) that calls `ui_status(msg)`; replace all `ui_status("OOM: ...")` calls in `src/forward.c`, `src/history.c`, `src/tracker.c`, `src/poll.c` with `ui_oom("OOM: ...")` preserving exact status text. `src/config.c` keeps its own `fprintf(stderr)` contract (tested separately). |
 | 2026-11-19 | Step 3 marked mostly done (TD-19/TD-25 addressed, TD-24 partial, TD-17 CI + sanitize + resolve tests); Step 4.1 restored after loss in the seam rewrite (fatal resolution + clean client destroy + dashboard gate); fixed `resolve_dest` misrouting in `request_id_from_extra`; 42 tests / 175 checks; refreshed citations |
+| 2026-11-19 | Step 4.2 done (TD-04 prune rehash, TD-29 load guard); TD-18 docs fixed; 02/05 amended first; tombstone-hole test assertion flipped to the fixed contract |

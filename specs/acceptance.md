@@ -59,7 +59,7 @@ cover (TDLib, UI, files, multi-process restart). The automated suite
 | SC-02-02 | Immediate restart: no duplicates | |
 | SC-02-03 | Window smaller than a post's age: post skipped | |
 | SC-02-04 | `history_window_hours: 0`: old posts forwarded, no prune lines | |
-| SC-02-05 | Run 20+ min: prune line appears when entries expire | |
+| SC-02-05 | Run 20+ min: prune line appears; live messages not re-forwarded afterwards | |
 | SC-02-06 | Corrupt a timestamp in `history.txt`: entry becomes permanent | |
 | SC-02-07 | Delete `history.txt` (destructive): bounded duplicate risk | |
 
@@ -93,8 +93,8 @@ cover (TDLib, UI, files, multi-process restart). The automated suite
 
 | ID | Scenario | Result |
 |---|---|---|
-| SC-05-01 | `cp config.json.example config.json`: invalid JSON, exit 1 | |
-| SC-05-02 | Remove the comment, fill credentials: starts | |
+| SC-05-01 | `cp config.json.example config.json`: config accepted (valid JSON); auth proceeds to the phone prompt | |
+| SC-05-02 | Fill real credentials: starts | |
 | SC-05-03 | `"API_ID"` instead of `api_id`: accepted | |
 | SC-05-04 | String `"true"` for sequential: backfill does not start | |
 | SC-05-05 | Delete `history.txt` between runs: bounded duplicates | |

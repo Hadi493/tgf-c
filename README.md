@@ -23,11 +23,12 @@ TGF monitors Telegram channels and automatically forwards new messages to a dest
 - **Sequential forwarding** – Collects all history first, then forwards messages in chronological order (asc/desc)
 - **Backfill resume** – Persists scan state across restarts so no messages are missed
 - **Dashboard** – Live terminal UI showing status (disable with `-d`)
-- **Single binary** – TDLib is vendored; no system deps needed
+- **Single binary** – TDLib is vendored; needs ncurses (CMake only to build TDLib from source)
 
 ## Requirements
 
 - GCC or Clang
+- ncurses development library (Linux/macOS)
 - A [Telegram API ID and hash](https://my.telegram.org/apps)
 - CMake & `make` (only if rebuilding TDLib from source)
 
@@ -51,7 +52,7 @@ Edit `config.json`:
 
 ```json
 {
-    "api_id": YOUR_API_ID,
+    "api_id": 123456,
     "api_hash": "YOUR_API_HASH",
     "source_channels": ["@channel1", "@channel2"],
     "dest_channel": "@me",
@@ -84,8 +85,8 @@ On first run you'll be prompted for your phone number, verification code, and 2F
 
 ## License
 
-[GNU GPLv2](LICENSE)
+[GNU GPLv3](LICENSE)
 
 ## Contributing
 
-No strict guidelines – just follow the existing code style and keep it simple.
+Spec-driven: read [AGENTS.md](AGENTS.md) and [specs/README.md](specs/README.md) — amend the owning spec before changing behavior. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, style, and the PR checklist.

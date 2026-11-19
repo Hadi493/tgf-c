@@ -356,7 +356,7 @@ static void test_history_prune_removes(void) {
     CHECK(!history_store_has(&rt.history, &rt.cfg, -1, 2));
 }
 
-static void test_history_tombstone_hole(void) {
+static void test_history_prune_repairs_chains(void) {
     long long first = 0, second = 0;
     CHECK(find_hash_collision(&first, &second));
     if (!first || !second) return;
@@ -371,7 +371,18 @@ static void test_history_tombstone_hole(void) {
 
     CHECK_LL(rt.history.count, 1);
     CHECK(history_find_physical(-500, second) >= 0);
-    CHECK(!history_store_has(&rt.history, &rt.cfg, -500, second));
+    CHECK(history_store_has(&rt.history, &rt.cfg, -500, second));
+    CHECK(!history_store_has(&rt.history, &rt.cfg, -500, first));
+}
+
+static void test_history_load_skips_malformed(void) {
+    char content[128];
+    snprintf(content, sizeof(content), "   \n\t\n-100_5\n-100_6 %lld\n", (long long)time(NULL));
+    write_file("history.txt", content);
+    history_store_load(&rt.history, &rt.cfg);
+    CHECK_LL(rt.history.count, 2);
+    CHECK(history_store_has(&rt.history, &rt.cfg, -100, 5));
+    CHECK(history_store_has(&rt.history, &rt.cfg, -100, 6));
 }
 
 static void test_tracker_load_fields(void) {
@@ -789,7 +800,8 @@ int main(void) {
     run_test("enqueue_marks_history", test_enqueue_marks_history);
     run_test("history_window_expiry", test_history_window_expiry);
     run_test("history_prune_removes", test_history_prune_removes);
-    run_test("history_tombstone_hole", test_history_tombstone_hole);
+    run_test("history_prune_repairs_chains", test_history_prune_repairs_chains);
+    run_test("history_load_skips_malformed", test_history_load_skips_malformed);
     run_test("tracker_load_fields", test_tracker_load_fields);
     run_test("tracker_save_roundtrip", test_tracker_save_roundtrip);
     run_test("tracker_capacity", test_tracker_capacity);
