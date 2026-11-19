@@ -34,7 +34,7 @@ behavior must land with a spec change in the same change set.
 
 `AGENTS.md` at the repository root is the entry point for agents and points
 here. `specs/acceptance.md` is the manual verification checklist derived from
-the scenario tables below (54 scenarios); it is not a numbered spec.
+the scenario tables below (56 scenarios); it is not a numbered spec.
 
 ## Normative language
 

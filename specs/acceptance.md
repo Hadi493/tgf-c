@@ -72,9 +72,11 @@ cover (TDLib, UI, files, multi-process restart). The automated suite
 | SC-03-03 | 3-photo album: one album, ascending ids | |
 | SC-03-04 | Two posts, delay 10: `FORWARDED` lines ≥10 s apart | |
 | SC-03-05 | `desc`: batches newest-first; reply/album members ascending | |
-| SC-03-06 | Revoke destination permission: `ERROR [fwd_…]`, no retry | |
+| SC-03-06 | Revoke destination permission: `ERROR [fwd_…] code=403` + permanent-drop status, no retry | |
 | SC-03-07 | Kill with jobs queued: they are not forwarded after restart | |
 | SC-03-08 | Album split across polls: two partial albums | |
+| SC-03-09 | Flood wait: `Flood wait: pausing Ns`, dispatch resumes, no loss | |
+| SC-03-10 | Transient error then success: retried, delivered | |
 
 ### Sequential backfill (spec 04)
 

@@ -68,6 +68,8 @@ static void on_error(Runtime *r, void *client, cJSON *root) {
             exit(1);
         }
         if (id.kind == REQ_RESOLVE_SOURCE) resolve_next(r, client);
+        if (id.kind == REQ_FORWARD_ONE || id.kind == REQ_FORWARD_BATCH)
+            forward_error_handle(r, id, code, msg);
     }
 }
 
@@ -153,6 +155,7 @@ int main(int argc, char *argv[]) {
         free(rt.fwd_queue[idx].ids);
     }
     free(rt.fwd_queue);
+    free(rt.fwd_inflight.ids);
     free(rt.source_chat_ids);
     for (int i = 0; i < rt.cfg.num_sources; i++) free(rt.cfg.source_channels[i]);
     free(rt.cfg.source_channels);

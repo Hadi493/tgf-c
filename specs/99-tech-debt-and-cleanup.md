@@ -19,15 +19,17 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 
 ### P0
 
-#### TD-01 — Dedupe is recorded at enqueue, not delivery
-- **Evidence:** `src/forward.c:122-124`; no retry in
-  `src/main.c:58-72`, `src/forward.c:130-152`; error path drops the job.
-- **Impact:** any failed `forwardMessages` (permissions, deleted message,
-  flood wait, network) loses the message permanently. A restart during queue
-  drain loses the rest.
+#### TD-01 — Dedupe is recorded at enqueue, not delivery — **PARTIALLY ADDRESSED (Step 4.3)**
+- **Evidence (pre-fix):** no retry; the error path dropped the job, so any
+  failed `forwardMessages` lost the message permanently.
 - **Spec clauses:** 02 §3.4, 03 §7.
-- **Fix gate:** new spec for delivery semantics (retry, un-mark on failure,
-  idempotency, flood-wait). Do **not** change during structural refactor.
+- **Resolution:** at-least-once delivery (03 §7): one in-flight job, bounded
+  retry (3 attempts), flood-wait pause, permanent-drop and timeout statuses,
+  stale-response guard. Marking stays at enqueue; the un-mark-on-failure
+  option was rejected (re-exposure race + probe-safe remove complexity).
+- **Residual:** restart discards queue + in-flight (TD-03, Step 4.4);
+  re-queue OOM drops the job (TD-19); permanent failures (400/403) are
+  dropped by design with a status line.
 
 #### TD-02 — Backfill pending buffer is RAM-only
 - **Evidence:** `src/tracker.c:108-139` (no persistence); `src/poll.c:112-117` persists
@@ -38,7 +40,7 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
   atomically) plus a documented resume contract. 04 §5 must change first.
 
 #### TD-03 — Forward queue is RAM-only and dropped on shutdown
-- **Evidence:** `src/forward.c:3-19`, `src/main.c:148-163` (no flush).
+- **Evidence:** `src/forward.c:3-20`, `src/main.c:150-166` (no flush).
 - **Impact:** queued forwards disappear while their ids are already in
   `history.txt`.
 - **Fix gate:** durable queue or a “flush before exit” contract that waits for
@@ -55,7 +57,7 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
   leaves holes until the next successful prune (reported via `ui_oom`).
 
 #### TD-05 — Failed resolution is invisible and permanent — **ADDRESSED in Step 4.1**
-- **Evidence:** `src/main.c:23-72` (no retry), `src/main.c:121` (gate just stays
+- **Evidence:** `src/main.c:23-74` (no retry), `src/main.c:123` (gate just stays
   false), `src/ui.c:59` (literal `ACTIVE`).
 - **Impact:** a typo in `dest_channel` yields one ≤1 s status line and a
   process that looks healthy forever. Same for an all-failed source set.
@@ -69,19 +71,22 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 - **Impact:** 10k queued single messages ≈ 20 MB and O(n²) shifting; 450k
   (45 sources × 10k) ≈ 0.9 GB, likely OOM before the queue drains.
 - **Resolution:** ring buffer with head index and heap `ids` sized to `count`
-  (`src/tgf.h:35-39`, `src/forward.c:3-19`, `130-152`); FIFO, delay gate,
+  (`src/tgf.h:37-42`, `src/forward.c:3-20`, `130-152`); FIFO, delay gate,
   one-per-tick, and the 256-id cap preserved. 03 §5 refreshed; no observable
   pacing change.
 
 ### P1
 
-#### TD-06 — No flood-wait / backoff / rate-limit handling
-- **Evidence:** no `retry_after` or `429` inspection anywhere; `src/main.c:58-72`.
-- **Impact:** Telegram rate limits turn into permanent loss via TD-01.
-- **Fix gate:** policy spec (queue pause, resume, caps).
+#### TD-06 — No flood-wait / backoff / rate-limit handling — **ADDRESSED (Step 4.3)**
+- **Evidence (pre-fix):** no `retry_after` or `429` inspection anywhere.
+- **Impact:** Telegram rate limits turned into permanent loss via TD-01.
+- **Resolution:** 429 parses `retry after N` (default 5 s, min 1 s), pauses
+  all dispatch until `now + N`, re-queues without consuming retry budget;
+  pause is uncapped by design (03 §7). Other errors use the bounded retry
+  budget.
 
 #### TD-07 — Source resolution failures are silent beyond one line — **ADDRESSED in Step 4.1**
-- **Evidence:** `src/main.c:58-72`; failed sources keep `chat_id = 0` and are
+- **Evidence:** `src/main.c:58-74`; failed sources keep `chat_id = 0` and are
   skipped by `src/poll.c:9-10`.
 - **Impact:** operator cannot tell which sources are dead; no retry; no summary.
 - **Fix gate:** decide fail-fast vs. degrade-with-warning; amend 01 §4.
@@ -89,14 +94,14 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 
 #### TD-08 — Auth failures are not handled
 - **Evidence:** `src/auth.c:18-72` handles only four states; `on_error` only
-  prints (`src/main.c:58-72`).
+  prints (`src/main.c:58-74`).
 - **Impact:** wrong code/password, QR login, or device confirmation leaves the
   process idle with no retry or guidance.
 - **Fix gate:** re-prompt/abort policy; amend 01 §2.
 
 #### TD-09 — Fixed caps and silent truncation
 - **Evidence:** `MAX_SEQ_TRACKER 128` (`src/tgf.h:16`), `MAX_FWD_IDS 256`
-  (`src/tgf.h:33`), reply/album arrays 256 (`src/forward.c:52`, `79`, `82`), 8 KiB
+  (`src/tgf.h:33`), reply/album arrays 256 (`src/forward.c:53`, `80`, `83`), 8 KiB
   request buffer (`src/transport.c:10`), 10k page with no pagination in live mode
   (`src/tgf.h:13`, `src/poll.c:13-14`), `num_sources` unbounded.
 - **Impact:** 129th source never works; >255 children are marked but not
@@ -118,8 +123,8 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 
 #### TD-12 — Errors are strings; reporting policy is ad hoc
 - **Evidence:** every failure is `ui_status("…")`; exits mix `fprintf` and
-  silent returns (`src/config.c:9-77`, `src/main.c:148-163`); one-slot `status_msg`
-  (`src/tgf.h:143`, `src/ui.c:104-108`).
+  silent returns (`src/config.c:9-77`, `src/main.c:150-166`); one-slot `status_msg`
+  (`src/tgf.h:150`, `src/ui.c:104-108`).
 - **Impact:** no error taxonomy, no counters, no reliable operator feedback,
   lost messages between refreshes.
 - **Structural fix:** typed result codes + one reporting sink; preserve the
@@ -131,8 +136,8 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
   malformed-line skip), tracker round-trip
   and capacity, dispatch tagging/pacing, the config table from 05 §2, and
   resolution cursor/summary/handler behavior, history-handler filtering, and
-  backfill completion heuristics A/B + reset-without-done (56 tests,
-  220 checks). Missing: UI and main-loop dispatch
+  backfill completion heuristics A/B + reset-without-done (63 tests,
+  254 checks). Missing: UI and main-loop dispatch
   (`request_id_from_extra` is static in `src/main.c`; a
   `resolve_dest` misrouting regression there was caught only by live
   verification). The test and sanitize targets are POSIX-only.
@@ -181,13 +186,13 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 
 #### TD-11 — Dedupe key mismatch between read and write
 - **Evidence:** read uses the message’s `chat_id` (`src/poll.c:133`), write uses
-  `src_chat_id` (`src/forward.c:123`).
+  `src_chat_id` (`src/forward.c:124`).
 - **Impact:** none for channel posts; incorrect dedupe if TDLib ever returns a
   differing chat id.
 - **Fix gate:** normalize on `src_chat_id`; amend 02 §2.2.
 
 #### TD-13 — Unreconciled boundaries
-- **Evidence:** album grouping is per batch (`src/forward.c:77-97`); cutoff uses
+- **Evidence:** album grouping is per batch (`src/forward.c:78-98`); cutoff uses
   message date (`src/poll.c:134`) while dedupe expiry uses enqueue time
   (`src/history.c:69`).
 - **Impact:** split albums; a message can be inside the window yet have an
@@ -196,8 +201,8 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 
 #### TD-14 — Conflated feature flag and permissive CLI
 - **Evidence:** `enable_sequential_forwarding` controls backfill and sorting
-  (`src/poll.c:54`, `src/forward.c:47-48`); any argv disables the dashboard, only `-d`
-  enables debug (`src/resolve.c:54-56`, `src/forward.c:163`, `src/main.c:128-142`).
+  (`src/poll.c:54`, `src/forward.c:48-49`); any argv disables the dashboard, only `-d`
+  enables debug (`src/resolve.c:54-56`, `src/forward.c:193`, `src/main.c:130-144`).
 - **Impact:** cannot request ordering without backfill; typos silently change
   UI mode.
 - **Fix gate:** split flags and add argument validation; amend 04 §1, 06 §1.
@@ -209,7 +214,7 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 - **Fix gate:** explicit handling or a clear fatal error; amend 01 §2.3.
 
 #### TD-16 — cJSON numeric precision and key casing
-- **Evidence:** `cJSON_GetInt64` casts `valuedouble` (`src/tgf.h:107-113`);
+- **Evidence:** `cJSON_GetInt64` casts `valuedouble` (`src/tgf.h:110-116`);
   `cJSON_GetObjectItem` is case-insensitive (`cJSON.c:1983-1986`).
 - **Impact:** `media_album_id` above 2^53 loses precision; config keys match
   unexpectedly.
@@ -236,7 +241,7 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 
 #### TD-22 — Reply parent duplication
 - **Evidence:** the parent id is injected into the child job but the parent is
-  not marked grouped (`src/forward.c:54`, `69-76`).
+  not marked grouped (`src/forward.c:55`, `70-77`).
 - **Impact:** duplicate parent in the destination when the parent is in the
   same batch or was forwarded earlier.
 - **Fix gate:** mark the parent grouped (changes historical behavior) or
@@ -252,7 +257,7 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 #### TD-24 — Dead and vestigial code — **PARTIALLY ADDRESSED**
 - **Evidence (remaining):** `last_msg_id`/`last_date` written, never read
   (`src/tracker.c:33-52`); `config_free` (`src/config.c:79-89`) used only by
-  tests while production frees the same fields by hand (`src/main.c:154-158`);
+  tests while production frees the same fields by hand (`src/main.c:160-164`);
   vestigial `(void)msg_id; (void)date;` in `tracker_store_set`
   (`src/tracker.c:34`).
 - **Removed:** `pending_req`, the `on_update` auth path, the unreachable
@@ -263,13 +268,13 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 
 #### TD-26 — Blocking auth input and signal handling quality
 - **Evidence:** `fgets` inside handlers (`src/auth.c:35-58`); `signal()` not
-  `sigaction` (`src/main.c:96-97`); up to 1 s shutdown latency.
+  `sigaction` (`src/main.c:98-99`); up to 1 s shutdown latency.
 - **Impact:** no cancellation, slow shutdown, prompt can outlive SIGINT.
 - **Structural fix:** input step decoupled from the receive loop; signal-safe
   flag; same user-visible prompts.
 
 #### TD-28 — CWD-relative, hardcoded paths
-- **Evidence:** `config.json` (`src/main.c:84`), `tdlib_db`/`tdlib_files`
+- **Evidence:** `config.json` (`src/main.c:86`), `tdlib_db`/`tdlib_files`
   (`src/auth.c:24-25`), `seq_tracker.txt` (`src/tracker.c:4`), default
   `history.txt` (`src/config.c:46`).
 - **Impact:** running from another directory creates a second profile; no
@@ -303,7 +308,7 @@ the step is too large.
 - Done (2026-11-19): backfill completion heuristics (04 §3.4–3.5) and the
   history handler are locked in by the characterization suite (`src/poll.c`
   is linked into `tests/tgf_tests`).
-- `specs/acceptance.md` added: 54-scenario manual checklist for TDLib, UI,
+- `specs/acceptance.md` added: 56-scenario manual checklist for TDLib, UI,
   file, and restart behavior that unit tests cannot cover.
 - Changing any existing assertion is a behavior change: amend the owning spec
   in the same change.
@@ -322,7 +327,7 @@ the step is too large.
 4. **Done:** transport `transport_send(rt, client, type, payload, RequestId)`
    plus a handler registry (`handler_for`, `src/main.c:39-49`); `request_extra`
    translates `RequestId` back into the exact `@extra` strings on the wire
-   (`src/tgf.h:90-105`). `transport_destroy` wraps client shutdown.
+   (`src/tgf.h:93-108`). `transport_destroy` wraps client shutdown.
 5. **Done:** pure grouping `group_batch(msgs, count, order) -> GroupResult`,
    reproducing qsort behavior, ascending intra-job ids, caps, and parent
    duplication.
@@ -347,7 +352,7 @@ Update `nob.c` source list; keep the same binary name and CLI.
 
 **Done:** all ten modules plus `src/tgf.h` exist; `nob.c` compiles them with
 `-I.`/`-Isrc`; `tests/test_main.c` stubs `transport_send`/`transport_destroy`/
-`ui_status`/`ui_oom`/`ui_forwarded`. No behavior change; 220 checks pass.
+`ui_status`/`ui_oom`/`ui_forwarded`. No behavior change; 254 checks pass.
 
 ### Step 3 — Structural cleanups (behavior-preserving) — **mostly done**
 - Done: dead code removed (TD-24, partial — see register).
@@ -366,8 +371,9 @@ Order chosen by user risk:
 1. **Done (Step 4.1, restored 2026-11-19):** resolution fail-fast/visible errors (TD-05, TD-07).
 2. **Done (Step 4.2):** prune rehash + malformed-line rejection (TD-04,
    TD-29) — fixes duplicate forwards.
-3. **Delivery-time dedupe + retry + flood-wait** (TD-01, TD-06) — largest
-   semantic change; needs a delivery-state model.
+3. **Done (Step 4.3):** at-least-once delivery — in-flight slot, bounded
+   retry, flood-wait pause (TD-01 partial, TD-06). Marking stays at enqueue;
+   durability completes the guarantee in Step 4.4.
 4. **Durable pending + queue** (TD-02, TD-03, TD-27) — depends on (3).
 5. **Cap/truncation policy** (TD-09).
 6. **Flag/CLI split** (TD-14) and **dashboard states** (TD-23).
@@ -414,4 +420,5 @@ structural refactor would violate Phase 2:
 | 2026-11-18 | TD-19 design: add `ui_oom(const char *msg)` in `src/ui.c` (declared in `src/tgf.h`) that calls `ui_status(msg)`; replace all `ui_status("OOM: ...")` calls in `src/forward.c`, `src/history.c`, `src/tracker.c`, `src/poll.c` with `ui_oom("OOM: ...")` preserving exact status text. `src/config.c` keeps its own `fprintf(stderr)` contract (tested separately). |
 | 2026-11-19 | Step 3 marked mostly done (TD-19/TD-25 addressed, TD-24 partial, TD-17 CI + sanitize + resolve tests); Step 4.1 restored after loss in the seam rewrite (fatal resolution + clean client destroy + dashboard gate); fixed `resolve_dest` misrouting in `request_id_from_extra`; 42 tests / 175 checks; refreshed citations |
 | 2026-11-19 | Step 4.2 done (TD-04 prune rehash, TD-29 load guard); TD-18 docs fixed; 02/05 amended first; tombstone-hole test assertion flipped to the fixed contract |
-| 2026-11-19 | Step 3 leftover done: backfill completion + history-handler characterization tests (src/poll.c linked into the suite); 56 tests / 220 checks; no behavior change |
+| 2026-11-19 | Step 3 leftover done: backfill completion + history-handler characterization tests (src/poll.c linked into the suite); 63 tests / 254 checks; no behavior change |
+| 2026-11-19 | Step 4.3 done: at-least-once delivery (03 §5-§10, 02 §3.4, 00 §8/§9, 01 §6 amended first); TD-01 partial, TD-06 addressed; restart loss remains TD-03 |

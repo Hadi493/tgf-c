@@ -91,6 +91,12 @@ static void reset_state(void) {
     rt.fwd_queue_cap = 0;
     rt.fwd_queue_head = 0;
     rt.fwd_last_time = 0;
+    free(rt.fwd_inflight.ids);
+    rt.fwd_inflight.ids = NULL;
+    rt.fwd_inflight.retries = 0;
+    rt.fwd_inflight_active = false;
+    rt.fwd_inflight_time = 0;
+    rt.fwd_flood_until = 0;
 
     rt.cfg.history_window_hours = 24;
     rt.cfg.enable_sequential_forwarding = 0;
@@ -686,8 +692,102 @@ static void test_dispatch_delay_gate(void) {
     CHECK_LL(rt.fwd_queue_count, 1);
 
     rt.cfg.forward_delay_sec = 0;
+    char *argv[] = { NULL, NULL };
+    RequestId rid = { REQ_FORWARD_ONE, -100123, 1 };
+    forward_handle(&rt, NULL, NULL, rid, argv);
     CHECK_LL(process_fwd_queue(&rt, NULL), 1);
     CHECK_LL(rt.fwd_queue_count, 0);
+}
+
+static void test_dispatch_inflight_blocks(void) {
+    long long a[1] = { 1 }, b[1] = { 2 };
+    rt.cfg.forward_delay_sec = 0;
+    fwd_queue_push(&rt, -100123, a, 1);
+    fwd_queue_push(&rt, -100123, b, 1);
+    CHECK_LL(process_fwd_queue(&rt, NULL), 1);
+    CHECK_LL(process_fwd_queue(&rt, NULL), 0);
+    CHECK_LL(rt.fwd_queue_count, 1);
+    char *argv[] = { NULL, NULL };
+    RequestId rid = { REQ_FORWARD_ONE, -100123, 1 };
+    forward_handle(&rt, NULL, NULL, rid, argv);
+    CHECK_LL(process_fwd_queue(&rt, NULL), 1);
+    CHECK_STR_CONTAINS(captured_payload, "\"message_ids\":[2]");
+}
+
+static void test_forward_retry_then_drop(void) {
+    long long a[1] = { 7 };
+    rt.cfg.forward_delay_sec = 0;
+    fwd_queue_push(&rt, -100123, a, 1);
+    RequestId rid = { REQ_FORWARD_ONE, -100123, 7 };
+    for (int i = 0; i < 3; i++) {
+        CHECK_LL(process_fwd_queue(&rt, NULL), 1);
+        forward_error_handle(&rt, rid, 500, "Internal server error");
+    }
+    CHECK_LL(rt.fwd_queue_count, 0);
+    CHECK_LL(rt.fwd_inflight_active, false);
+    CHECK_STR_CONTAINS(rt.status_msg, "Forward dropped after 3 attempts");
+}
+
+static void test_forward_permanent_drop(void) {
+    long long a[1] = { 7 };
+    fwd_queue_push(&rt, -100123, a, 1);
+    CHECK_LL(process_fwd_queue(&rt, NULL), 1);
+    RequestId rid = { REQ_FORWARD_ONE, -100123, 7 };
+    forward_error_handle(&rt, rid, 403, "Forbidden");
+    CHECK_LL(rt.fwd_queue_count, 0);
+    CHECK_LL(rt.fwd_inflight_active, false);
+    CHECK_STR_CONTAINS(rt.status_msg, "Forward dropped (permanent error 403)");
+}
+
+static void test_forward_flood_pause(void) {
+    long long a[1] = { 7 };
+    rt.cfg.forward_delay_sec = 0;
+    fwd_queue_push(&rt, -100123, a, 1);
+    CHECK_LL(process_fwd_queue(&rt, NULL), 1);
+    RequestId rid = { REQ_FORWARD_ONE, -100123, 7 };
+    forward_error_handle(&rt, rid, 429, "Too Many Requests: retry after 30");
+    CHECK_LL(rt.fwd_queue_count, 1);
+    CHECK(rt.fwd_flood_until > (double)time(NULL) + 25);
+    CHECK_STR_CONTAINS(rt.status_msg, "Flood wait: pausing 30s");
+    CHECK_LL(process_fwd_queue(&rt, NULL), 0);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].retries, 0);
+    rt.fwd_flood_until = 0;
+    CHECK_LL(process_fwd_queue(&rt, NULL), 1);
+}
+
+static void test_forward_timeout_retries(void) {
+    long long a[1] = { 7 };
+    rt.cfg.forward_delay_sec = 0;
+    fwd_queue_push(&rt, -100123, a, 1);
+    CHECK_LL(process_fwd_queue(&rt, NULL), 1);
+    rt.fwd_inflight_time = (double)time(NULL) - FWD_TIMEOUT_SEC - 1;
+    CHECK_LL(process_fwd_queue(&rt, NULL), 1);
+    CHECK_STR_CONTAINS(rt.status_msg, "Forward timed out");
+    CHECK_LL(rt.fwd_inflight.retries, 1);
+}
+
+static void test_forward_stale_ignored(void) {
+    long long a[1] = { 7 };
+    fwd_queue_push(&rt, -100123, a, 1);
+    CHECK_LL(process_fwd_queue(&rt, NULL), 1);
+    RequestId rid = { REQ_FORWARD_ONE, -999999, 7 };
+    forward_error_handle(&rt, rid, 500, "x");
+    CHECK_LL(rt.fwd_inflight_active, true);
+    CHECK_LL(rt.fwd_queue_count, 0);
+}
+
+static void test_forward_retry_tail_order(void) {
+    long long a[1] = { 1 }, b[1] = { 2 };
+    rt.cfg.forward_delay_sec = 0;
+    fwd_queue_push(&rt, -100123, a, 1);
+    fwd_queue_push(&rt, -100123, b, 1);
+    CHECK_LL(process_fwd_queue(&rt, NULL), 1);
+    RequestId rid = { REQ_FORWARD_ONE, -100123, 1 };
+    forward_error_handle(&rt, rid, 500, "x");
+    CHECK_LL(process_fwd_queue(&rt, NULL), 1);
+    CHECK_STR_CONTAINS(captured_payload, "\"message_ids\":[2]");
+    CHECK_LL(rt.fwd_queue_count, 1);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].retries, 1);
 }
 
 static int captured_stderr_fd = -1;
@@ -1026,6 +1126,13 @@ int main(void) {
     run_test("dispatch_single", test_dispatch_single);
     run_test("dispatch_batch", test_dispatch_batch);
     run_test("dispatch_delay_gate", test_dispatch_delay_gate);
+    run_test("dispatch_inflight_blocks", test_dispatch_inflight_blocks);
+    run_test("forward_retry_then_drop", test_forward_retry_then_drop);
+    run_test("forward_permanent_drop", test_forward_permanent_drop);
+    run_test("forward_flood_pause", test_forward_flood_pause);
+    run_test("forward_timeout_retries", test_forward_timeout_retries);
+    run_test("forward_stale_ignored", test_forward_stale_ignored);
+    run_test("forward_retry_tail_order", test_forward_retry_tail_order);
     run_test("config_valid_full", test_config_valid_full);
     run_test("config_defaults", test_config_defaults);
     run_test("config_missing_file", test_config_missing_file);

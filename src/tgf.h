@@ -31,11 +31,14 @@ typedef struct {
 } SeqEntry;
 
 #define MAX_FWD_IDS 256
+#define MAX_FWD_ATTEMPTS 3
+#define FWD_TIMEOUT_SEC 60
 
 typedef struct {
     long long src_chat_id;
     long long *ids;
     int       count;
+    int       retries;
 } ForwardJob;
 
 typedef struct {
@@ -137,6 +140,10 @@ typedef struct {
     int         fwd_queue_cap;
     int         fwd_queue_head;
     double      fwd_last_time;
+    ForwardJob  fwd_inflight;
+    bool        fwd_inflight_active;
+    double      fwd_inflight_time;
+    double      fwd_flood_until;
 
     volatile bool keep_running;
     bool          dashboard_active;
@@ -179,6 +186,7 @@ void poll_channels(Runtime *rt, void *client);
 void history_handle(Runtime *rt, void *client, cJSON *root, RequestId id, char *argv[]);
 void history_response(Runtime *rt, void *client, cJSON *root, long long src_chat_id);
 void forward_handle(Runtime *rt, void *client, cJSON *root, RequestId id, char *argv[]);
+void forward_error_handle(Runtime *rt, RequestId id, int code, const char *msg);
 
 void history_store_load(HistoryStore *hs, const Config *cfg);
 int  history_store_has(const HistoryStore *hs, const Config *cfg, long long chat_id, long long msg_id);

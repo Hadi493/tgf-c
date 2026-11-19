@@ -14,9 +14,9 @@ single-threaded CLI program backed by flat files.
 | Concern | Choice | Evidence |
 |---|---|---|
 | Language | C, compiled as one binary | `nob.c:220-235` |
-| Telegram API | TDLib JSON interface (`libtdjson`) | `src/transport.c:3-4`, `src/main.c:87-89` |
+| Telegram API | TDLib JSON interface (`libtdjson`) | `src/transport.c:3-4`, `src/main.c:89-91` |
 | JSON | vendored cJSON | `src/tgf.h:10`, `cJSON.c` |
-| Terminal UI | ncurses, disabled with `TGF_NOGUI` or any argv | `src/ui.c:29-89`, `src/main.c:128-142` |
+| Terminal UI | ncurses, disabled with `TGF_NOGUI` or any argv | `src/ui.c:29-89`, `src/main.c:130-144` |
 | Build | `nob` (self-rebuilding C build script) | `nob.c` |
 | Storage | `config.json`, `history.txt`, `seq_tracker.txt`, `tdlib_db/` | 05 |
 | Tests / CI | `./nob test` (POSIX) + GitHub Actions (`.github/workflows/ci.yml`) | `nob.c:80-97`, TD-17 |
@@ -85,11 +85,11 @@ TDLib is pinned as a git submodule at `v1.8.0-10143-ga17f87c4c`
 
 - **One thread.** All TDLib traffic is the blocking JSON client:
   `td_json_client_send` and `td_json_client_receive(client, 1.0)`
-  (`src/transport.c:6-29`, `src/main.c:103`).
+  (`src/transport.c:6-29`, `src/main.c:105`).
 - **One tick ≈ 1 s.** `receive` blocks up to one second, so every periodic task
   is scheduled by comparing `time(NULL)` deltas in the loop.
 - **No callbacks.** Responses are matched to requests only by the `@extra`
-  string embedded at send time (`request_extra`, `src/tgf.h:90-105`). The tags
+  string embedded at send time (`request_extra`, `src/tgf.h:93-108`). The tags
   are: `auth_params`, `auth_phone`, `auth_code`, `auth_pw`, `getme`,
   `resolve_dest`, `resolve_<index>`, `history_<chat_id>`, `fwd_<chat_id>_<id>`,
   `fwd_<chat_id>_batch`.
@@ -99,7 +99,7 @@ TDLib is pinned as a git submodule at `v1.8.0-10143-ga17f87c4c`
   (`resolve_dest`, `getme`) are matched before prefix tags (`resolve_`).
 - **Single parsing for responses.** `main` parses each response once and passes
   the `cJSON *root` to handlers, deleting it after the handler returns
-  (`src/main.c:105-116`). The auth handler still receives the raw string and
+  (`src/main.c:107-118`). The auth handler still receives the raw string and
   uses `strstr` (`src/auth.c:19`).
 - **Blocking auth.** Phone/code/2FA prompts use `fgets(stdin)` inside the
   auth handler (`src/auth.c:35-58`); the loop cannot tick while waiting.
@@ -124,14 +124,14 @@ TDLib is pinned as a git submodule at `v1.8.0-10143-ga17f87c4c`
 
 ### 6.2 Liveness / resolution
 
-All fields live in `Runtime` (`src/tgf.h:120-144`).
+All fields live in `Runtime` (`src/tgf.h:123-151`).
 
 | Field | Meaning | Set by |
 |---|---|---|
 | `authorized` | TDLib reached `authorizationStateReady` | `src/auth.c:60` |
 | `dest_resolved`, `dest_chat_id` | destination chat id known | `src/resolve.c:40-47` |
 | `source_chat_ids[]`, `source_count` | resolved source ids, count of successes | `src/resolve.c:49-59` |
-| `src_name` | display name of the last source whose forward **response succeeded** | `src/forward.c:154-164` |
+| `src_name` | display name of the last source whose forward **response succeeded** | `src/forward.c:184-196` |
 | `resolve_index`, `resolve_active` | source-resolution cursor / in-flight flag | `src/resolve.c:6-30` |
 
 ### 6.3 Work and storage
@@ -143,6 +143,7 @@ All fields live in `Runtime` (`src/tgf.h:120-144`).
 | `history` (`HistoryStore`: `set`, `time`, `set_size`, `count`) | open-addressing dedupe table + enqueue timestamps |
 | `tracker` (`TrackerStore`: `entries[MAX_SEQ_TRACKER]`, `count`) | per-source sequential state and pending buffer |
 | `fwd_queue`, `fwd_queue_count`, `fwd_queue_cap`, `fwd_queue_head` | ring-buffer FIFO of `ForwardJob` (heap `ids` per job) |
+| `fwd_inflight`, `fwd_inflight_active`, `fwd_inflight_time`, `fwd_flood_until` | in-flight forward job, its dispatch time, flood-wait pause deadline |
 | `fwd_last_time` | timestamp of last dispatch attempt (double seconds) |
 | `keep_running`, `dashboard_active`, `status_msg[256]` | loop flag, UI mode, one-slot status message |
 
@@ -174,7 +175,7 @@ All fields live in `Runtime` (`src/tgf.h:120-144`).
                     └────────────┘
 ```
 
-There is no enum. The `ACTIVE` gate is evaluated each tick at `src/main.c:121`.
+There is no enum. The `ACTIVE` gate is evaluated each tick at `src/main.c:123`.
 
 ## 8. Primary data flow
 
@@ -193,41 +194,45 @@ TDLib getChatHistory response (newest first, ≤ MSG_LIMIT)
                               ├─ seq_tracker_set (sequential only)
                               └─ fwd_queue_push
                                         │
-                                        ▼  one job per tick, delay-gated
+                                        ▼  one job per tick, delay-gated,
+                                           one in flight
                                  forwardMessages(dest, src, ids)
                                         │
                                         ▼
-                                 response: update src_name / UI
-                                 error: status line only, no retry
+                                 response: update src_name / UI,
+                                           confirm delivery
+                                 error: retry / flood pause / drop (03 §7)
 ```
 
 ## 9. Invariants (MUST)
 
 1. The process writes to Telegram only through `transport_send` (`src/transport.c:6`).
 2. A message is added to the dedupe set **before** its forward request is sent;
-   delivery success is not required (`src/forward.c:123`).
+   delivery success is not required (`src/forward.c:124`).
 3. `forwardMessages` jobs are dispatched at most once per loop tick
-   (`src/forward.c:130-152`).
+   (`src/forward.c:152-182`).
 4. `source_count` counts successful resolutions only; failed sources are never
    polled.
 5. Polling starts only when `authorized && dest_resolved && source_count >= 1
    && !resolve_active`.
-6. `seq_tracker` is loaded only when sequential mode is enabled (`src/main.c:95`);
+6. `seq_tracker` is loaded only when sequential mode is enabled (`src/main.c:97`);
    the file is written only by sequential paths and `flush_pending`.
 7. Every runtime path is relative to the process CWD.
 8. The dedupe key is `<chat_id>_<message_id>` (`src/history.c:62`, `87`).
 9. Messages are forwarded from the source chat id to the configured
    destination chat id in one `forwardMessages` call per job
-   (`src/forward.c:144`).
-10. There is no retry, backoff, or flood-wait logic anywhere.
+   (`src/forward.c:172`).
+10. Forward delivery is at-least-once: bounded retry (3 attempts),
+    flood-wait pause, and a 60 s in-flight timeout (03 §7). No other retry
+    or backoff exists.
 
 ## 10. Boundaries (current and target)
 
 | Boundary | Current reality | Target for refactor |
 |---|---|---|
-| TDLib | `transport_send`/`transport_destroy` + typed `RequestId` (`src/transport.c`, `src/tgf.h:70-105`) | achieved; handler registry in `src/main.c:39-49` |
+| TDLib | `transport_send`/`transport_destroy` + typed `RequestId` (`src/transport.c`, `src/tgf.h:73-108`) | achieved; handler registry in `src/main.c:39-49` |
 | Storage | `history_store_*` / `tracker_store_*` APIs; direct `fopen`/`rename` inside | one storage module per file (APIs exist, files not split) |
-| Config | `Config` built by `config_load`, stored as `rt.cfg` via a thin `load_config` adapter (`src/main.c:74-76`) | achieved |
+| Config | `Config` built by `config_load`, stored as `rt.cfg` via a thin `load_config` adapter (`src/main.c:76-78`) | achieved |
 | UI | `Ui` vtable (`ui_init`, stderr/ncurses impls, `src/ui.c:91-123`) | achieved; dashboard state model still open (TD-23) |
 | Domain | `group_batch` pure; queue takes `Runtime *`; clock is `time(NULL)` inside `process_fwd_queue` | injected clock (open) |
 
@@ -243,7 +248,7 @@ MUST NOT add new globals to `src/tgf.h` without a spec change (TD-10).
 - No error taxonomy: every failure is a string (TD-12).
 - No metrics, no request accounting.
 - Fixed capacities: 128 tracked chats, 256 ids per job, 8 KB request buffer,
-  10,000 messages per history page (`src/tgf.h:13-39`, `src/transport.c:10`).
+  10,000 messages per history page (`src/tgf.h:13-42`, `src/transport.c:10`).
   The forward queue itself grows dynamically (ring buffer, heap id payloads).
 
 ## 12. Acceptance scenarios
@@ -263,3 +268,4 @@ MUST NOT add new globals to `src/tgf.h` without a spec change (TD-10).
 | 2026-11-17 | Corrected `tgf.c` citations and the §6 state model to the working-tree `Runtime`/`Config` refactor |
 | 2026-11-17 | Step 2: split `tgf.c` into `src/main.c`/`auth.c`/`resolve.c`/`poll.c`/`transport.c`/`ui.c`; refreshed citations and module table |
 | 2026-11-19 | As-built refresh: Step 1c–1f seams (storage APIs, RequestId registry, pure group_batch, Ui vtable), Step 3 structural work (ring-buffer queue TD-25, ui_oom TD-19, dead-code removal TD-24, parse-once), Step 4.1 restoration; removed pending_req; refreshed citations and module table |
+| 2026-11-19 | Step 4.3: invariant 10 amended (at-least-once delivery), data flow and runtime state updated for the in-flight slot and flood pause |

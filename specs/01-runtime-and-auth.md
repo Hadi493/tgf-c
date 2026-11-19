@@ -4,27 +4,27 @@ Status: baseline · Owner: `src/main.c`, `src/auth.c`, `src/resolve.c` · Depend
 
 ## 1. Startup sequence
 
-Exact order in `main` (`src/main.c:78-102`):
+Exact order in `main` (`src/main.c:80-104`):
 
-1. `setvbuf(stdout/stderr, _IONBF)` — unbuffered output (`src/main.c:80-81`).
+1. `setvbuf(stdout/stderr, _IONBF)` — unbuffered output (`src/main.c:82-83`).
 2. `ui_init` selects the stderr or ncurses sink from `argv[1]`
-   (`src/main.c:82`, 06 §1).
+   (`src/main.c:84`, 06 §1).
 3. `load_config("config.json")`; any failure prints to stderr and exits **1**
-   (`src/main.c:84`). The path is hardcoded and CWD-relative.
+   (`src/main.c:86`). The path is hardcoded and CWD-relative.
 4. `num_sources == 0` → `ERROR: No source channels configured` on stderr,
-   exit **1** (`src/main.c:85`). No TDLib client is created.
-5. `td_json_client_create()`; NULL → stderr + exit **1** (`src/main.c:87-88`).
-6. `setLogVerbosityLevel 0` — TDLib logging silenced (`src/main.c:89`). TDLib's
+   exit **1** (`src/main.c:87`). No TDLib client is created.
+5. `td_json_client_create()`; NULL → stderr + exit **1** (`src/main.c:89-90`).
+6. `setLogVerbosityLevel 0` — TDLib logging silenced (`src/main.c:91`). TDLib's
    own creation-time log lines may reach stderr before this takes effect.
 7. `calloc(num_sources, sizeof(long long))` for `source_chat_ids`; failure
-   destroys the client and exits **1** (`src/main.c:91-92`).
+   destroys the client and exits **1** (`src/main.c:93-94`).
 8. `history_store_load()`; `tracker_store_load()` only if sequential mode is
-   enabled (`src/main.c:94-95`).
+   enabled (`src/main.c:96-97`).
 9. `signal(SIGINT)`, `signal(SIGTERM)` → set `keep_running = false`
-   (`src/main.c:96-97`, `src/main.c:15-18`).
-10. `getAuthorizationState` (`src/main.c:98`).
-11. Enter the loop; `last_poll = 0`, `last_prune = 0` (`src/main.c:100-102`,
-    `src/main.c:144-145`).
+   (`src/main.c:98-99`, `src/main.c:15-18`).
+10. `getAuthorizationState` (`src/main.c:100`).
+11. Enter the loop; `last_poll = 0`, `last_prune = 0` (`src/main.c:102-104`,
+    `src/main.c:146-147`).
 
 No CLI flags affect startup beyond `-d` (06). No config path override exists.
 
@@ -38,7 +38,7 @@ JSON (`strstr`), not by reading the state object’s `@type` (`src/auth.c:19-71`
 `authorizationState` update with no recognized state causes no action.
 
 The main loop routes `updateAuthorizationState` directly to `auth_handle`
-(`src/main.c:110-111`); there is no separate update path.
+(`src/main.c:112-113`); there is no separate update path.
 
 ### 2.2 States handled
 
@@ -76,7 +76,7 @@ remains running and inert; no message explains why (TD-08, TD-15).
 - Phone prompt clears the screen with ANSI `ESC[2J ESC[H` before printing.
 - Auth request errors are reported through `ui_status`; because the dashboard
   starts only after `authorized`, they go to **stderr** as `ERROR [extra]
-  code=N: message` (`src/main.c:58-72`, `src/ui.c:104-108`).
+  code=N: message` (`src/main.c:58-74`, `src/ui.c:104-108`).
 - There is **no retry or re-prompt** after an auth error. A wrong code leaves
   TDLib waiting and the process idle (TD-08).
 - A SIGINT during a prompt sets `keep_running` but `fgets` usually restarts;
@@ -145,7 +145,7 @@ configured names, space-separated, failed entries only).
 
 ## 5. Main loop
 
-Pseudo-code (`src/main.c:102-146`):
+Pseudo-code (`src/main.c:104-148`):
 
 ```
 while (keep_running):
@@ -176,7 +176,7 @@ Consequences:
 
 - The receive timeout sets the floor for every task: ~1 s.
 - Errors are routed by `@type == "error"` **before** `@extra`; all request
-  errors are handled by `on_error` (`src/main.c:58-72`). The response handlers
+  errors are handled by `on_error` (`src/main.c:58-74`). The response handlers
   contain no error branches (the unreachable ones were removed, TD-24).
 - `argv` is passed into the response handlers solely to decide whether to print debug
   lines (`src/resolve.c:54-56`); `forward_handle` ignores it (the UI sink owns
@@ -188,10 +188,11 @@ Consequences:
 ## 6. Shutdown
 
 SIGINT/SIGTERM only clear `keep_running` (`src/main.c:15-18`). The loop exits after the
-current `receive` returns (≤1 s) and cleanup runs (`src/main.c:148-163`):
+current `receive` returns (≤1 s) and cleanup runs (`src/main.c:150-166`):
 
 - free every non-NULL `history_set` entry, the table, and `history_time`;
 - free each queued job's heap `ids`, then the `fwd_queue` ring array;
+- free the in-flight job's heap `ids` if present;
 - free `source_chat_ids`, each `source_channels[i]`, `source_channels`,
   `api_hash`, `dest_channel`, `history_file`;
 - `td_json_client_destroy`.
@@ -244,3 +245,4 @@ other process state is left to the OS. No other exit path.
 | 2026-11-17 | Step 2: moved auth/resolve/dispatch into `src/`; refreshed citations |
 | 2026-11-17 | Step 4.1: Destination resolution failure now fatal (exit 1); all-sources-failed and empty-sources now fatal (exit 1); failed sources summary printed |
 | 2026-11-19 | Step 4.1 restored after loss in the RequestId seam rewrite: fatal destination/source resolution re-implemented with clean client destroy, empty-sources startup check, failed-source WARNING summary format pinned, dashboard gated on full resolution; fixed resolve_dest misrouting in request_id_from_extra; verified SC-01-03/04/05/06 and SC-06-05 against a live cached session; refreshed citations |
+| 2026-11-19 | Step 4.3: shutdown frees the in-flight job; queued and in-flight work is still dropped on exit (TD-03, Step 4.4) |

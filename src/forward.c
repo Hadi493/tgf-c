@@ -12,6 +12,7 @@ void fwd_queue_push(Runtime *rt, long long src_chat_id, const long long *ids, in
     ForwardJob *j = &rt->fwd_queue[idx];
     j->src_chat_id = src_chat_id;
     j->count = count < MAX_FWD_IDS ? count : MAX_FWD_IDS;
+    j->retries = 0;
     j->ids = malloc(j->count * sizeof(long long));
     if (!j->ids) { char b[64]; snprintf(b, sizeof(b), "OOM: fwd job ids (%d)", j->count); ui_oom(b); return; }
     for (int i = 0; i < j->count; i++) j->ids[i] = ids[i];
@@ -127,10 +128,37 @@ void process_msgs(Runtime *rt, long long src_chat_id, PendingMsg *msgs, int coun
     if (rt->cfg.enable_sequential_forwarding) tracker_store_save(&rt->tracker);
 }
 
+static void fwd_inflight_clear(Runtime *rt) {
+    free(rt->fwd_inflight.ids);
+    rt->fwd_inflight.ids = NULL;
+    rt->fwd_inflight_active = false;
+}
+
+static void fwd_requeue(Runtime *rt, int consume_budget) {
+    ForwardJob *j = &rt->fwd_inflight;
+    if (consume_budget && ++j->retries >= MAX_FWD_ATTEMPTS) {
+        char b[80]; snprintf(b, sizeof(b), "Forward dropped after %d attempts", j->retries); ui_status(b);
+        fwd_inflight_clear(rt);
+        return;
+    }
+    int before = rt->fwd_queue_count;
+    fwd_queue_push(rt, j->src_chat_id, j->ids, j->count);
+    if (rt->fwd_queue_count == before) { fwd_inflight_clear(rt); return; }
+    int tail = (rt->fwd_queue_head + rt->fwd_queue_count - 1) % rt->fwd_queue_cap;
+    rt->fwd_queue[tail].retries = j->retries;
+    fwd_inflight_clear(rt);
+}
+
 int process_fwd_queue(Runtime *rt, void *client) {
-    if (rt->fwd_queue_count == 0) return 0;
     double now = (double)time(NULL);
+    if (rt->fwd_inflight_active) {
+        if (now - rt->fwd_inflight_time <= FWD_TIMEOUT_SEC) return 0;
+        ui_status("Forward timed out");
+        fwd_requeue(rt, 1);
+    }
+    if (rt->fwd_queue_count == 0) return 0;
     if (now - rt->fwd_last_time < rt->cfg.forward_delay_sec) return 0;
+    if (now < rt->fwd_flood_until) return 0;
 
     ForwardJob *j = &rt->fwd_queue[rt->fwd_queue_head];
     char ids_str[8192] = "";
@@ -143,7 +171,9 @@ int process_fwd_queue(Runtime *rt, void *client) {
     RequestId id = { j->count == 1 ? REQ_FORWARD_ONE : REQ_FORWARD_BATCH, j->src_chat_id, j->ids[0] };
     transport_send(rt, client, "forwardMessages", payload, id);
 
-    free(j->ids);
+    rt->fwd_inflight = *j;
+    rt->fwd_inflight_active = true;
+    rt->fwd_inflight_time = now;
     j->ids = NULL;
     rt->fwd_queue_head = (rt->fwd_queue_head + 1) % rt->fwd_queue_cap;
     rt->fwd_queue_count--;
@@ -161,4 +191,26 @@ void forward_handle(Runtime *rt, void *client, cJSON *root, RequestId id, char *
         }
     }
     ui_forwarded(rt->src_name, rt->cfg.dest_channel);
+    if (rt->fwd_inflight_active && id.chat_id == rt->fwd_inflight.src_chat_id)
+        fwd_inflight_clear(rt);
+}
+
+void forward_error_handle(Runtime *rt, RequestId id, int code, const char *msg) {
+    if (!rt->fwd_inflight_active || id.chat_id != rt->fwd_inflight.src_chat_id) return;
+    if (code == 429) {
+        int secs = 5;
+        const char *p = msg ? strstr(msg, "retry after ") : NULL;
+        if (p) secs = atoi(p + 12);
+        if (secs < 1) secs = 1;
+        rt->fwd_flood_until = (double)time(NULL) + secs;
+        char b[80]; snprintf(b, sizeof(b), "Flood wait: pausing %ds", secs); ui_status(b);
+        fwd_requeue(rt, 0);
+        return;
+    }
+    if (code == 400 || code == 403) {
+        char b[80]; snprintf(b, sizeof(b), "Forward dropped (permanent error %d)", code); ui_status(b);
+        fwd_inflight_clear(rt);
+        return;
+    }
+    fwd_requeue(rt, 1);
 }

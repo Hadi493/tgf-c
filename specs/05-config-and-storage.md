@@ -5,7 +5,7 @@ Status: baseline · Owner: `src/config.c` (`config_load`), `src/history.c`, `src
 ## 1. Location rules
 
 - `config.json` is opened at the **hardcoded path** `config.json` in the
-  process CWD (`src/main.c:84`). There is no flag or environment override.
+  process CWD (`src/main.c:86`). There is no flag or environment override.
 - `tdlib_db/` and `tdlib_files/` are hardcoded relative paths passed to TDLib
   (`src/auth.c:24-25`).
 - `history_file` defaults to `history.txt`; a relative value is resolved
@@ -128,7 +128,7 @@ Example: `-1001394595107_46548385792 1794488266`.
 - `backfill_done`: 0/1.
 - Written through `seq_tracker.txt.tmp` + `rename` (`src/tracker.c:24-31`).
 - Pending buffers are **not** persisted.
-- Only loaded when sequential mode is enabled (`src/main.c:95`).
+- Only loaded when sequential mode is enabled (`src/main.c:97`).
 - Missing/corrupt file → empty tracker; a line with 3 fields is accepted with
   `scan_from=0, backfill_done=0`.
 

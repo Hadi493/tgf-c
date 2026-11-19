@@ -90,7 +90,7 @@ location; moving `tgf` without `lib/td/build` breaks it.
 
 ## 5. Windows
 
-- `-DTGF_NOGUI` removes all ncurses code (`src/ui.c:29-89`, `src/main.c:128-142`).
+- `-DTGF_NOGUI` removes all ncurses code (`src/ui.c:29-89`, `src/main.c:130-144`).
 - No `-lncurses`, no rpath.
 - If `tdjson.dll` or `tdjson.lib` exists in the working directory, link
   `-ltdjson`; otherwise perform the same ensure/build sequence and add
@@ -161,7 +161,7 @@ warnings in those files are only visible from `./nob`. Baseline status:
 - `cc -Wall -Wextra -Wshadow -Wpedantic -fsanitize=address -I. -Isrc -c src/main.c`
   (with the TDLib include paths) is clean.
 - `./nob` build passes.
-- `./nob test` passes 56 tests / 220 checks under ASan+UBSan.
+- `./nob test` passes 63 tests / 254 checks under ASan+UBSan.
 - cppcheck (with `nob.h:` filtered, as in `AGENTS.md`) reports 2 errors in
   vendored `cJSON.c` (`invalidFunctionArg`, lines 113 and 415) and 16 warnings,
   also in `cJSON.c` (unchanged baseline). In `src/` it reports style-level

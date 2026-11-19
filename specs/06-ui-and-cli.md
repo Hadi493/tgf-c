@@ -4,7 +4,7 @@ Status: baseline · Owner: `src/ui.c`, `src/main.c` · Depends on: 00, 01
 
 ## 1. argv behavior
 
-`argc` is ignored (`(void)argc`, `src/main.c:79`). Only `argv[1]` is inspected:
+`argc` is ignored (`(void)argc`, `src/main.c:81`). Only `argv[1]` is inspected:
 
 | Invocation | Dashboard | Debug lines | Status output |
 |---|---|---|---|
@@ -13,7 +13,7 @@ Status: baseline · Owner: `src/ui.c`, `src/main.c` · Depends on: 00, 01
 | `./tgf anything-else` | no | no | stderr |
 | `./tgf -d extra …` | no | yes | stderr |
 
-`ui_init` (`src/main.c:82`) selects the ncurses sink when `argv[1] == NULL`,
+`ui_init` (`src/main.c:84`) selects the ncurses sink when `argv[1] == NULL`,
 else the stderr sink; debug is exactly `-d`.
 
 There is no argument parsing, no `--help`, no usage, no config-path override,
@@ -23,7 +23,7 @@ proposes rejecting them; that is not current behavior.)
 ## 2. Output channels
 
 Both stdout and stderr are unbuffered (`setvbuf(..., _IONBF)`,
-`src/main.c:80-81`).
+`src/main.c:82-83`).
 
 | Message | Stream |
 |---|---|
@@ -63,7 +63,7 @@ after `authorized` in dashboard mode. Consequences:
 
 Initialized on the first loop iteration where `argv[1] == NULL && authorized
 && dest_resolved && source_count >= 1 && !resolve_active`
-(`src/main.c:128-142`). The full-resolution gate (Step 4.1) ensures no
+(`src/main.c:130-144`). The full-resolution gate (Step 4.1) ensures no
 dashboard starts on any fatal resolution path:
 
 ```
@@ -105,7 +105,7 @@ Observations:
   `num_sources`.
 - `FORWARDED from` is the **last source whose forward response succeeded**
   (`src_name`, default `"unknown"`), not a live per-message log
-  (`src/forward.c:154-164`). `update_action_msg` (`src/ui.c:73-77`) is called immediately
+  (`src/forward.c:184-196`). `update_action_msg` (`src/ui.c:73-77`) is called immediately
   after each full redraw (`src/ui.c:83-86`), so it is currently redundant: the
   line changes only on the next 1 Hz refresh, not between refreshes.
 - The status row disappears one refresh after it is printed.
