@@ -128,6 +128,8 @@ static void reset_state(void) {
     remove("fwd_queue.txt");
     remove("fwd_queue.txt.tmp");
     remove("history.txt.tmp");
+    remove("seq_pending.txt");
+    remove("seq_pending.txt.tmp");
 }
 
 static PendingMsg make_msg(long long id, long long album, long long reply, long long date) {
@@ -658,6 +660,75 @@ static void test_tracker_pending_flush(void) {
     CHECK(e != NULL);
     CHECK_LL(e->pending_count, 0);
     CHECK(e->pending == NULL);
+}
+
+static void test_pending_journal_roundtrip(void) {
+    rt.cfg.enable_sequential_forwarding = 1;
+    tracker_store_set_scan_from(&rt.tracker, -100, 0);
+    tracker_store_pending_append(&rt.tracker, -100, make_msg(5, 0, 0, 100));
+    tracker_store_pending_append(&rt.tracker, -100, make_msg(6, 0, 0, 101));
+    CHECK_LL(find_tracker(-100)->pending_count, 2);
+    free(rt.tracker.entries[0].pending);
+    rt.tracker.entries[0].pending = NULL;
+    rt.tracker.entries[0].pending_count = 0;
+    rt.tracker.entries[0].pending_cap = 0;
+    seq_pending_load(&rt);
+    CHECK_LL(find_tracker(-100)->pending_count, 2);
+    CHECK_LL(find_tracker(-100)->pending[1].id, 6);
+}
+
+static void test_pending_compact_on_flush(void) {
+    rt.cfg.enable_sequential_forwarding = 1;
+    tracker_store_set_scan_from(&rt.tracker, -100, 0);
+    tracker_store_set_scan_from(&rt.tracker, -200, 0);
+    tracker_store_pending_append(&rt.tracker, -100, make_msg(5, 0, 0, 100));
+    tracker_store_pending_append(&rt.tracker, -200, make_msg(9, 0, 0, 100));
+    flush_pending(&rt, -100);
+    CHECK_LL(find_tracker(-100)->pending_count, 0);
+    CHECK_LL(find_tracker(-200)->pending_count, 1);
+    FILE *f = fopen("seq_pending.txt", "r");
+    CHECK(f != NULL);
+    char line[256];
+    int lines = 0;
+    long long chat = 0;
+    while (f && fgets(line, sizeof(line), f)) { lines++; sscanf(line, "%lld", &chat); }
+    if (f) fclose(f);
+    CHECK_LL(lines, 1);
+    CHECK_LL(chat, -200);
+}
+
+static void test_pending_load_corrupt_skipped(void) {
+    rt.cfg.enable_sequential_forwarding = 1;
+    tracker_store_set_scan_from(&rt.tracker, -100, 0);
+    write_file("seq_pending.txt", "-100 5\n-100 6 0 0 101\n");
+    seq_pending_load(&rt);
+    CHECK_LL(find_tracker(-100)->pending_count, 1);
+    CHECK_LL(find_tracker(-100)->pending[0].id, 6);
+}
+
+static void test_backfill_resume_after_crash(void) {
+    rt.cfg.enable_sequential_forwarding = 1;
+    time_t now = time(NULL);
+    cJSON *arr = cJSON_CreateArray();
+    cJSON_AddItemToArray(arr, msg_obj(30, now, 0, 0, -100));
+    cJSON_AddItemToArray(arr, msg_obj(20, now, 0, 0, -100));
+    cJSON *root = root_with(arr);
+    history_response(&rt, NULL, root, -100);
+    cJSON_Delete(root);
+    CHECK_LL(find_tracker(-100)->pending_count, 2);
+    free(rt.tracker.entries[0].pending);
+    rt.tracker.entries[0].pending = NULL;
+    rt.tracker.entries[0].pending_count = 0;
+    rt.tracker.entries[0].pending_cap = 0;
+    seq_pending_load(&rt);
+    CHECK_LL(find_tracker(-100)->pending_count, 2);
+    cJSON *arr2 = cJSON_CreateArray();
+    cJSON_AddItemToArray(arr2, msg_obj(20, now, 0, 0, -100));
+    cJSON *root2 = root_with(arr2);
+    history_response(&rt, NULL, root2, -100);
+    cJSON_Delete(root2);
+    CHECK_LL(tracker_store_is_backfill_done(&rt.tracker, -100), 1);
+    CHECK_LL(rt.fwd_queue_count, 2);
 }
 
 static void test_dispatch_single(void) {
@@ -1203,6 +1274,10 @@ int main(void) {
     run_test("tracker_save_roundtrip", test_tracker_save_roundtrip);
     run_test("tracker_capacity", test_tracker_capacity);
     run_test("tracker_pending_flush", test_tracker_pending_flush);
+    run_test("pending_journal_roundtrip", test_pending_journal_roundtrip);
+    run_test("pending_compact_on_flush", test_pending_compact_on_flush);
+    run_test("pending_load_corrupt_skipped", test_pending_load_corrupt_skipped);
+    run_test("backfill_resume_after_crash", test_backfill_resume_after_crash);
     run_test("dispatch_single", test_dispatch_single);
     run_test("dispatch_batch", test_dispatch_batch);
     run_test("dispatch_delay_gate", test_dispatch_delay_gate);

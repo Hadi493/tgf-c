@@ -241,8 +241,8 @@ MUST NOT add new globals to `src/tgf.h` without a spec change (TD-10).
 
 ## 11. Known architectural limitations
 
-- The forward queue is durable and resumes on restart (TD-03 addressed);
-  backfill pending is still RAM-only (TD-02, Step 4.4b).
+- The forward queue and backfill pending are durable and resume on restart
+  (TD-03, TD-02 addressed).
 - Feedback is one-slot and lossy: several status messages between dashboard
   refreshes collapse to the last (06).
 - No error taxonomy: every failure is a string (TD-12).
@@ -270,3 +270,4 @@ MUST NOT add new globals to `src/tgf.h` without a spec change (TD-10).
 | 2026-11-19 | As-built refresh: Step 1c–1f seams (storage APIs, RequestId registry, pure group_batch, Ui vtable), Step 3 structural work (ring-buffer queue TD-25, ui_oom TD-19, dead-code removal TD-24, parse-once), Step 4.1 restoration; removed pending_req; refreshed citations and module table |
 | 2026-11-19 | Step 4.3: invariant 10 amended (at-least-once delivery), data flow and runtime state updated for the in-flight slot and flood pause |
 | 2026-11-19 | Step 4.4a: forward queue durable (TD-03); pending backfill still RAM-only (TD-02) |
+| 2026-11-19 | Step 4.4b: backfill pending durable (TD-02 addressed) |

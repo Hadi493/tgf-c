@@ -105,7 +105,7 @@ void tracker_store_set_backfill_done(TrackerStore *ts, long long chat_id, int do
     }
 }
 
-void tracker_store_pending_append(TrackerStore *ts, long long chat_id, PendingMsg msg) {
+static int pending_push_ram(TrackerStore *ts, long long chat_id, PendingMsg msg) {
     for (int i = 0; i < ts->count; i++) {
         if (ts->entries[i].chat_id == chat_id) {
             int n = ts->entries[i].pending_count;
@@ -113,15 +113,53 @@ void tracker_store_pending_append(TrackerStore *ts, long long chat_id, PendingMs
             if (n >= cap) {
                 cap = cap ? cap * 2 : 512;
                 PendingMsg *np = realloc(ts->entries[i].pending, cap * sizeof(PendingMsg));
-                if (!np) { ui_oom("OOM in pending_append"); return; }
+                if (!np) { ui_oom("OOM in pending_append"); return 0; }
                 ts->entries[i].pending = np;
                 ts->entries[i].pending_cap = cap;
             }
             ts->entries[i].pending[n] = msg;
             ts->entries[i].pending_count = n + 1;
-            return;
+            return 1;
         }
     }
+    return 0;
+}
+
+void tracker_store_pending_append(TrackerStore *ts, long long chat_id, PendingMsg msg) {
+    if (!pending_push_ram(ts, chat_id, msg)) return;
+    FILE *f = fopen("seq_pending.txt", "a");
+    if (!f) return;
+    fprintf(f, "%lld %lld %lld %lld %lld\n", chat_id, msg.id, msg.album_id, msg.reply_to_msg_id, msg.date);
+    fclose(f);
+}
+
+void seq_pending_load(Runtime *rt) {
+    FILE *f = fopen("seq_pending.txt", "r");
+    if (!f) return;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        long long chat, id, album, reply, date;
+        if (sscanf(line, "%lld %lld %lld %lld %lld", &chat, &id, &album, &reply, &date) < 5) continue;
+        PendingMsg m = { id, album, reply, date };
+        pending_push_ram(&rt->tracker, chat, m);
+    }
+    fclose(f);
+}
+
+static void seq_pending_compact(long long chat_id) {
+    FILE *f = fopen("seq_pending.txt", "r");
+    if (!f) return;
+    FILE *out = fopen("seq_pending.txt.tmp", "w");
+    if (!out) { fclose(f); return; }
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        long long chat;
+        if (sscanf(line, "%lld", &chat) == 1 && chat == chat_id) continue;
+        fputs(line, out);
+    }
+    fclose(f);
+    fclose(out);
+    rename("seq_pending.txt.tmp", "seq_pending.txt");
 }
 
 void flush_pending(Runtime *rt, long long src_chat_id) {
@@ -133,6 +171,7 @@ void flush_pending(Runtime *rt, long long src_chat_id) {
             rt->tracker.entries[i].pending = NULL;
             rt->tracker.entries[i].pending_count = 0;
             rt->tracker.entries[i].pending_cap = 0;
+            seq_pending_compact(src_chat_id);
             return;
         }
     }

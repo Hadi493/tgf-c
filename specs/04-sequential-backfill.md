@@ -56,8 +56,8 @@ the end of `process_msgs` when sequential mode is on.
 | `tracker_store_is_backfill_done` | 0 if absent |
 | `tracker_store_set_backfill_done` | update first match; append if absent and count < 128 |
 | `tracker_store_set` | update `last_msg_id`/`last_date` to the max; append if absent |
-| `tracker_store_pending_append` | find entry; grow pending array (512 then ×2); on OOM status and drop; if no entry, **drop silently** |
-| `flush_pending` | if pending_count > 0, `process_msgs`; then free and zero the buffer |
+| `tracker_store_pending_append` | find entry; grow pending array (512 then ×2); on OOM status and drop; if no entry, **drop silently**; on success append a record to `seq_pending.txt` (05 §4.3) |
+| `flush_pending` | if pending_count > 0, `process_msgs`; then free and zero the buffer and compact `seq_pending.txt` (remove the chat's lines) |
 
 `last_msg_id` and `last_date` are written but never read for any decision.
 
@@ -146,15 +146,16 @@ Also on `total == 0` (`src/poll.c:31-39`): flush pending, set `backfill_done = 1
 
 ### 3.6 Flush
 
-`flush_pending` (`src/tracker.c:127-139`) calls
+`flush_pending` (`src/tracker.c:165-178`) calls
 `process_msgs(chat_id, pending, pending_count)`, which:
 
 - sorts by date/id asc or desc (03 §2);
 - groups replies/albums, marks history, enqueues forward jobs;
 - saves the tracker.
 
-The pending buffer is freed and reset. Nothing is forwarded until this point;
-the entire backfill is silent apart from status lines.
+The pending buffer is freed and reset, and the chat's journal records are
+compacted away (05 §4.3). Nothing is forwarded until this point; the entire
+backfill is silent apart from status lines.
 
 ### 3.7 Post-backfill steady state
 
@@ -173,15 +174,16 @@ the batch.
   backfill itself can enqueue thousands of jobs instantly (03 §5).
 - **Prune** can run while a backfill is in progress; it only affects the
   dedupe file, not the pending buffer.
-- **Restart** loads tracker rows, including `backfill_done` and `scan_from`;
-  pending buffers are lost (they are never persisted).
+- **Restart** loads tracker rows, including `backfill_done` and `scan_from`,
+  and replays `seq_pending.txt` into the pending buffers (05 §4.3); collected
+  messages survive a crash (TD-02 addressed).
 
 ## 5. Durability and correctness limits
 
 | Event | Result |
 |---|---|
-| Kill mid-backfill | Pending lost; `scan_from` persisted, so messages older than the resume point are still collected and **messages newer than it are never collected** (permanent loss) |
-| Kill after the last collection page, before the completion response | Pending lost; the next run completes with no pending, resets the cursor, restarts from newest, and forwards the window again (**duplicates**) |
+| Kill mid-backfill | Journaled pending survives (05 §4.3); `scan_from` persisted, so the next run collects older messages and flushes all collected ones (no loss beyond the last unflushed appends) |
+| Kill after the last collection page, before the completion response | Journaled pending survives; the next run completes with pending and flushes it (no re-scan duplicates) |
 | Kill during queue drain after flush | Un-forwarded messages already in `history.txt`; never retried (**loss**) |
 | `seq_tracker.txt` deleted, `history.txt` kept | Every chat backfills again and re-forwards its window (**duplicates**; dedupe bypassed during backfill) |
 | `history.txt` deleted, tracker done | Live mode re-forwards the newest page within the window once (**duplicates**) |
@@ -210,7 +212,7 @@ the batch.
 | SC-04-01 | Fresh state, sequential on, `asc`, 24 h window, one active source | `Backfill: …` lines, then forwards appear oldest→newest |
 | SC-04-02 | Same with `desc` | Forwards appear newest→oldest, album/reply members still ascending inside a job |
 | SC-04-03 | `history_window_hours: 0` | Backfill pages to the channel start; `seq_tracker.txt` row ends with `0 1` after flush |
-| SC-04-04 | Kill mid-backfill, restart | Messages collected before the kill are not forwarded; newer-than-resume messages are skipped (loss) |
+| SC-04-04 | Kill mid-backfill, restart | Journaled pending survives; resume collects older messages and flushes all (no loss beyond unflushed appends) |
 | SC-04-05 | Delete `seq_tracker.txt`, restart with history intact | Window is re-forwarded (duplicates) |
 | SC-04-06 | Restart after a completed backfill | No re-backfill; only new posts |
 | SC-04-07 | 129 distinct sources | 129th never tracks or forwards |
@@ -224,3 +226,4 @@ the batch.
 | 2026-11-17 | Corrected `tgf.c` citations to the working-tree `Runtime` refactor |
 | 2026-11-17 | Step 2: moved tracker/poll into `src/`; refreshed citations and `tracker_store_*` names |
 | 2026-11-19 | Refreshed citations after Step 3/4.1 changes in `src/poll.c` and `src/tracker.c`; backfill behavior unchanged |
+| 2026-11-19 | Step 4.4b: pending buffer journaled to seq_pending.txt (05 §4.3), replayed on restart, compacted on flush; TD-02 addressed; mid-backfill loss and re-scan duplicate cases closed; SC-04-04 updated |

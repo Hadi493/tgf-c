@@ -85,7 +85,7 @@ cover (TDLib, UI, files, multi-process restart). The automated suite
 | SC-04-01 | Fresh state, sequential asc, 24 h: oldest→newest after backfill | |
 | SC-04-02 | Same with desc: newest→oldest batches | |
 | SC-04-03 | Window 0: pages to channel start, tracker ends `0 1` | |
-| SC-04-04 | Kill mid-backfill, restart (destructive): newer-than-resume messages lost | |
+| SC-04-04 | Kill mid-backfill, restart (destructive): journaled pending survives, resume flushes all | |
 | SC-04-05 | Delete tracker, keep history (destructive): window re-forwarded | |
 | SC-04-06 | Restart after completed backfill: only new posts | |
 | SC-04-07 | 129 sources: 129th never tracks or forwards | |
@@ -103,6 +103,7 @@ cover (TDLib, UI, files, multi-process restart). The automated suite
 | SC-05-06 | Kill during prune rewrite: previous history file intact | |
 | SC-05-07 | Window 0: `history.txt` grows, no prune | |
 | SC-05-08 | Kill with jobs queued, restart: queue resumes from `fwd_queue.txt` | |
+| SC-05-09 | Kill mid-backfill, restart: pending resumes from `seq_pending.txt` | |
 
 ### UI and CLI (spec 06)
 

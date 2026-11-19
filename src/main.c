@@ -95,7 +95,7 @@ int main(int argc, char *argv[]) {
 
     history_store_load(&rt.history, &rt.cfg);
     fwd_queue_load(&rt);
-    if (rt.cfg.enable_sequential_forwarding) tracker_store_load(&rt.tracker);
+    if (rt.cfg.enable_sequential_forwarding) { tracker_store_load(&rt.tracker); seq_pending_load(&rt); }
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
     transport_send(&rt, client, "getAuthorizationState", "", (RequestId){REQ_NONE, 0, 0});

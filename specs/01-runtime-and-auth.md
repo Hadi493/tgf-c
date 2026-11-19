@@ -19,8 +19,8 @@ Exact order in `main` (`src/main.c:80-105`):
 7. `calloc(num_sources, sizeof(long long))` for `source_chat_ids`; failure
    destroys the client and exits **1** (`src/main.c:93-94`).
 8. `history_store_load()`; `fwd_queue_load()` resumes persisted forward jobs
-   (05 §5); `tracker_store_load()` only if sequential mode is enabled
-   (`src/main.c:96-98`).
+   (05 §5); in sequential mode `tracker_store_load()` then `seq_pending_load()`
+   replays the pending journal (05 §4.3) (`src/main.c:96-99`).
 9. `signal(SIGINT)`, `signal(SIGTERM)` → set `keep_running = false`
    (`src/main.c:99-100`, `src/main.c:15-18`).
 10. `getAuthorizationState` (`src/main.c:101`).
@@ -198,11 +198,11 @@ current `receive` returns (≤1 s) and cleanup runs (`src/main.c:151-167`):
   `api_hash`, `dest_channel`, `history_file`;
 - `td_json_client_destroy`.
 
-The forward queue is already persisted (05 §5) and resumes on the next run
-(TD-03 addressed). It does **not** flush backfill pending buffers, free
-`seq_tracker[i].pending`, save the tracker, or close/checkpoint anything else;
-pending backfill work is lost (TD-02, Step 4.4b). The ncurses terminal is
-restored by `atexit(ncurses_cleanup)`.
+The forward queue (05 §5) and backfill pending journal (05 §4.3) are already
+persisted and resume on the next run (TD-03, TD-02 addressed). It does **not**
+free `seq_tracker[i].pending`, save the tracker, or close/checkpoint anything
+else; the RAM buffers are rebuilt from the journal on the next run. The
+ncurses terminal is restored by `atexit(ncurses_cleanup)`.
 
 Exit codes: `0` on normal loop exit; `1` for config load failure, empty
 `source_channels`, client creation failure, `source_chat_ids` allocation
@@ -249,3 +249,4 @@ other process state is left to the OS. No other exit path.
 | 2026-11-19 | Step 4.1 restored after loss in the RequestId seam rewrite: fatal destination/source resolution re-implemented with clean client destroy, empty-sources startup check, failed-source WARNING summary format pinned, dashboard gated on full resolution; fixed resolve_dest misrouting in request_id_from_extra; verified SC-01-03/04/05/06 and SC-06-05 against a live cached session; refreshed citations |
 | 2026-11-19 | Step 4.3: shutdown frees the in-flight job; queued and in-flight work is still dropped on exit (TD-03, Step 4.4) |
 | 2026-11-19 | Step 4.4a: startup loads fwd_queue.txt; queued work survives restart (TD-03 addressed); pending backfill still lost (TD-02) |
+| 2026-11-19 | Step 4.4b: startup replays seq_pending.txt in sequential mode; pending backfill survives restart (TD-02 addressed) |

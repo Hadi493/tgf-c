@@ -12,6 +12,7 @@ Status: baseline · Owner: `src/config.c` (`config_load`), `src/history.c`, `src
   against the CWD.
 - `seq_tracker.txt` is a hardcoded relative path (`src/tracker.c:4`, `25`).
 - `fwd_queue.txt` is a hardcoded relative path (§5, `src/forward.c`).
+- `seq_pending.txt` is a hardcoded relative path (§4.3, `src/tracker.c`).
 - Running from a different directory is equivalent to a fresh installation:
   empty dedupe set, empty tracker, new TDLib session.
 
@@ -139,6 +140,24 @@ Example: `-1001394595107_46548385792 1794488266`.
 128 rows. Extra rows are neither loaded nor created; behavior degrades silently
 (04 §2.5).
 
+### 4.3 Pending journal (`seq_pending.txt`)
+
+The backfill pending buffer is journaled so a crash mid-backfill does not lose
+collected messages (TD-02, addressed; Step 4.4b).
+
+- Format, one line per collected message:
+  `<chat_id> <id> <album_id> <reply_to_msg_id> <date>`.
+- Appended (`fprintf` + `fclose`, no `fsync`) by `tracker_store_pending_append`
+  each time a message is pushed to a chat's RAM buffer. A crash can lose the
+  last unflushed appends (same window as `history.txt`).
+- On flush (`flush_pending`), the chat's lines are removed by rewriting
+  `seq_pending.txt.tmp` + `rename` (compaction).
+- Loaded at startup **only in sequential mode**, after `tracker_store_load`
+  (`seq_pending_load`); records are pushed to the RAM buffers without
+  re-journaling. Missing file → empty. A line with fewer than 5 fields is
+  skipped.
+- Save/append failure is silent; the RAM buffer still works for the run.
+
 ## 5. Durable forward queue (`fwd_queue.txt`)
 
 The forward queue and the in-flight job are persisted so a restart resumes
@@ -217,6 +236,9 @@ migration are TDLib’s concern. Deleting `tdlib_db/` forces a new login.
 | `fwd_queue.txt` missing | Empty queue on startup (normal first run) |
 | `fwd_queue.txt` corrupt line | Line skipped; valid lines loaded |
 | `fwd_queue.txt` save failure | Silent; queue still in RAM, lost on restart |
+| `seq_pending.txt` missing | Empty pending on startup (normal) |
+| `seq_pending.txt` corrupt line | Line skipped at load |
+| Kill mid-backfill | Journaled pending survives; resume collects older messages and flushes all |
 | CWD changed between runs | Different state entirely |
 
 ## 9. Acceptance scenarios
@@ -231,6 +253,7 @@ migration are TDLib’s concern. Deleting `tdlib_db/` forces a new login.
 | SC-05-06 | Kill during prune rewrite | Previous `history.txt` intact (tmp+rename) |
 | SC-05-07 | Run with `history_window_hours: 0` | No prune lines; `history.txt` grows |
 | SC-05-08 | Kill with jobs queued, restart | Queue resumes from `fwd_queue.txt`; queued posts forwarded (in-flight may duplicate) |
+| SC-05-09 | Kill mid-backfill, restart | Journaled pending survives; backfill resumes and flushes collected messages |
 
 ## Amendment log
 
@@ -243,3 +266,4 @@ migration are TDLib’s concern. Deleting `tdlib_db/` forces a new login.
 | 2026-11-19 | TD-18 fixed: config.json.example is valid JSON with history_window_hours and a numeric api_id placeholder; README license/deps corrected; TD-29 load guard documented; SC-05-01/02 updated |
 | 2026-11-19 | SC-05-01 expectation corrected to observed behavior: placeholder credentials pass local config validation; TDLib proceeds to the phone prompt |
 | 2026-11-19 | Step 4.4a: new §5 durable forward queue (fwd_queue.txt); history prune rewrite is tmp+rename (TD-27); TD-03 addressed; sections renumbered 5-8 → 6-9; SC-05-06 updated, SC-05-08 added |
+| 2026-11-19 | Step 4.4b: new §4.3 pending journal (seq_pending.txt); TD-02 addressed; SC-05-09 added |

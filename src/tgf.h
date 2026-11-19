@@ -201,6 +201,7 @@ void tracker_store_set_scan_from(TrackerStore *ts, long long chat_id, long long 
 int  tracker_store_is_backfill_done(const TrackerStore *ts, long long chat_id);
 void tracker_store_set_backfill_done(TrackerStore *ts, long long chat_id, int done);
 void tracker_store_pending_append(TrackerStore *ts, long long chat_id, PendingMsg msg);
+void seq_pending_load(Runtime *rt);
 void flush_pending(Runtime *rt, long long src_chat_id);
 
 void fwd_queue_push(Runtime *rt, long long src_chat_id, const long long *ids, int count);

@@ -161,7 +161,7 @@ warnings in those files are only visible from `./nob`. Baseline status:
 - `cc -Wall -Wextra -Wshadow -Wpedantic -fsanitize=address -I. -Isrc -c src/main.c`
   (with the TDLib include paths) is clean.
 - `./nob` build passes.
-- `./nob test` passes 68 tests / 275 checks under ASan+UBSan.
+- `./nob test` passes 72 tests / 289 checks under ASan+UBSan.
 - cppcheck (with `nob.h:` filtered, as in `AGENTS.md`) reports 2 errors in
   vendored `cJSON.c` (`invalidFunctionArg`, lines 113 and 415) and 16 warnings,
   also in `cJSON.c` (unchanged baseline). In `src/` it reports style-level
