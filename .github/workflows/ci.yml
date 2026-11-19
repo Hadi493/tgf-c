@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libncurses5-dev cppcheck
+
+      - name: Build
+        run: ./nob
+
+      - name: Lint (narrow)
+        run: cc -Wall -Wextra -Wshadow -Wpedantic -fsanitize=address -Ilib/td -Ilib/td/build -Isrc -I. -c src/main.c -o /dev/null
+
+      - name: Static analysis
+        run: |
+          cppcheck --enable=all --suppress=missingIncludeSystem \
+            --suppress=unmatchedSuppression --suppress=normalCheckLevelMaxBranches \
+            --suppress=toomanyconfigs *.c src/*.c *.h src/*.h 2>&1 | grep -v 'nob.h:' || true
+
+      - name: Tests (ASan+UBSan)
+        run: ./nob test
+
+      - name: Sanitize build
+        run: ./nob sanitize

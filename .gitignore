@@ -1,6 +1,7 @@
 *.old
 nob
 tgf
+tests/tgf_tests
 config.json
 *.txt
 *.bak

@@ -1,0 +1,829 @@
+#include "tgf.h"
+#include "config.h"
+
+#include <fcntl.h>
+#include <unistd.h>
+
+static Runtime rt;
+
+static int checks   = 0;
+static int failures = 0;
+
+static char captured_type[64];
+static char captured_payload[16384];
+static char captured_extra[128];
+
+#define CHECK(cond) do { \
+    checks++; \
+    if (!(cond)) { \
+        failures++; \
+        fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
+    } \
+} while (0)
+
+#define CHECK_LL(actual, expected) do { \
+    long long a_ = (long long)(actual), e_ = (long long)(expected); \
+    checks++; \
+    if (a_ != e_) { \
+        failures++; \
+        fprintf(stderr, "FAIL %s:%d: %s == %lld, expected %lld\n", \
+                __FILE__, __LINE__, #actual, a_, e_); \
+    } \
+} while (0)
+
+#define CHECK_STR_CONTAINS(haystack, needle) do { \
+    checks++; \
+    if (!strstr((haystack), (needle))) { \
+        failures++; \
+        fprintf(stderr, "FAIL %s:%d: \"%s\" does not contain \"%s\"\n", \
+                __FILE__, __LINE__, (haystack), (needle)); \
+    } \
+} while (0)
+
+void ui_status(const char *msg) {
+    snprintf(rt.status_msg, sizeof(rt.status_msg), "%s", msg);
+}
+
+void ui_oom(const char *msg) {
+    ui_status(msg);
+}
+
+void ui_forwarded(const char *source, const char *dest) {
+    (void)source; (void)dest;
+}
+
+void transport_send(Runtime *rt, void *client, const char *type, const char *payload, RequestId id) {
+    (void)client;
+    (void)rt;
+    char extra_buf[64];
+    const char *extra = request_extra(id, extra_buf, sizeof(extra_buf));
+    snprintf(captured_type, sizeof(captured_type), "%s", type);
+    snprintf(captured_payload, sizeof(captured_payload), "%s", payload ? payload : "");
+    snprintf(captured_extra, sizeof(captured_extra), "%s", extra ? extra : "");
+}
+
+void transport_destroy(void *client) {
+    (void)client;
+}
+
+static void reset_state(void) {
+    if (rt.history.set) {
+        for (int i = 0; i < rt.history.set_size; i++) free(rt.history.set[i]);
+    }
+    free(rt.history.set);
+    free(rt.history.time);
+    rt.history.set = NULL;
+    rt.history.time = NULL;
+    rt.history.set_size = 0;
+    rt.history.count = 0;
+
+    for (int i = 0; i < rt.tracker.count; i++) free(rt.tracker.entries[i].pending);
+    memset(rt.tracker.entries, 0, sizeof(rt.tracker.entries));
+    rt.tracker.count = 0;
+
+    for (int i = 0; i < rt.fwd_queue_count; i++) {
+        int idx = (rt.fwd_queue_head + i) % rt.fwd_queue_cap;
+        free(rt.fwd_queue[idx].ids);
+    }
+    free(rt.fwd_queue);
+    rt.fwd_queue = NULL;
+    rt.fwd_queue_count = 0;
+    rt.fwd_queue_cap = 0;
+    rt.fwd_queue_head = 0;
+    rt.fwd_last_time = 0;
+
+    rt.cfg.history_window_hours = 24;
+    rt.cfg.enable_sequential_forwarding = 0;
+    rt.cfg.sequence_direction = 0;
+    rt.cfg.forward_delay_sec = 0;
+    rt.dest_chat_id = -100777;
+
+    free(rt.source_chat_ids);
+    rt.source_chat_ids = NULL;
+    for (int i = 0; i < rt.cfg.num_sources; i++) free(rt.cfg.source_channels[i]);
+    free(rt.cfg.source_channels);
+    rt.cfg.source_channels = NULL;
+    rt.cfg.num_sources = 0;
+    rt.source_count = 0;
+    rt.resolve_index = 0;
+    rt.resolve_active = 0;
+    rt.authorized = 0;
+    rt.dest_resolved = 0;
+
+    captured_type[0] = 0;
+    captured_payload[0] = 0;
+    captured_extra[0] = 0;
+    rt.status_msg[0] = 0;
+
+    remove("history.txt");
+    remove("seq_tracker.txt");
+    remove("config.json");
+    remove("stderr.txt");
+}
+
+static PendingMsg make_msg(long long id, long long album, long long reply, long long date) {
+    PendingMsg m;
+    m.id = id;
+    m.album_id = album;
+    m.reply_to_msg_id = reply;
+    m.date = date;
+    return m;
+}
+
+static unsigned int test_hash(const char *key) {
+    unsigned int h = 2166136261u;
+    while (*key) {
+        h ^= (unsigned char)*key++;
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static int history_slot(long long chat_id, long long msg_id) {
+    char key[64];
+    snprintf(key, sizeof(key), "%lld_%lld", chat_id, msg_id);
+    unsigned int idx = test_hash(key) & (rt.history.set_size - 1);
+    for (int i = 0; i < rt.history.set_size; i++) {
+        if (!rt.history.set[idx]) return -1;
+        if (strcmp(rt.history.set[idx], key) == 0) return (int)idx;
+        idx = (idx + 1) & (rt.history.set_size - 1);
+    }
+    return -1;
+}
+
+static int history_find_physical(long long chat_id, long long msg_id) {
+    char key[64];
+    snprintf(key, sizeof(key), "%lld_%lld", chat_id, msg_id);
+    for (int i = 0; i < rt.history.set_size; i++)
+        if (rt.history.set[i] && strcmp(rt.history.set[i], key) == 0) return i;
+    return -1;
+}
+
+static void set_history_time(long long chat_id, long long msg_id, time_t ts) {
+    int slot = history_slot(chat_id, msg_id);
+    if (slot >= 0) rt.history.time[slot] = ts;
+}
+
+static SeqEntry *find_tracker(long long chat_id) {
+    for (int i = 0; i < rt.tracker.count; i++)
+        if (rt.tracker.entries[i].chat_id == chat_id) return &rt.tracker.entries[i];
+    return NULL;
+}
+
+static void write_file(const char *path, const char *content) {
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fputs(content, f);
+    fclose(f);
+}
+
+static int find_hash_collision(long long *first, long long *second) {
+    static int seen[16384];
+    char key[64];
+    for (int i = 0; i < 16384; i++) seen[i] = -1;
+    for (long long id = 1; id < 200000; id++) {
+        snprintf(key, sizeof(key), "%lld_%lld", (long long)-500, id);
+        unsigned int idx = test_hash(key) & 16383u;
+        if (seen[idx] >= 0) {
+            *first = seen[idx];
+            *second = id;
+            return 1;
+        }
+        seen[idx] = (int)id;
+    }
+    return 0;
+}
+
+static void test_empty_batch(void) {
+    process_msgs(&rt, -1, NULL, 0);
+    CHECK_LL(rt.fwd_queue_count, 0);
+    CHECK_LL(rt.history.count, 0);
+}
+
+static void test_single_message(void) {
+    PendingMsg m = make_msg(42, 0, 0, 100);
+    process_msgs(&rt, -100123, &m, 1);
+    CHECK_LL(rt.fwd_queue_count, 1);
+    CHECK_LL(rt.fwd_queue[0].count, 1);
+    CHECK_LL(rt.fwd_queue[0].ids[0], 42);
+    CHECK(history_store_has(&rt.history, &rt.cfg, -100123, 42));
+}
+
+static void test_two_messages_wire_order(void) {
+    PendingMsg msgs[2] = {
+        make_msg(2, 0, 0, 200),
+        make_msg(1, 0, 0, 100),
+    };
+    process_msgs(&rt, -100123, msgs, 2);
+    CHECK_LL(rt.fwd_queue_count, 2);
+    CHECK_LL(rt.fwd_queue[0].ids[0], 2);
+    CHECK_LL(rt.fwd_queue[1].ids[0], 1);
+}
+
+static void test_sequential_asc(void) {
+    PendingMsg msgs[3] = {
+        make_msg(3, 0, 0, 30),
+        make_msg(1, 0, 0, 10),
+        make_msg(2, 0, 0, 20),
+    };
+    rt.cfg.enable_sequential_forwarding = 1;
+    rt.cfg.sequence_direction = 0;
+    process_msgs(&rt, -100123, msgs, 3);
+    CHECK_LL(rt.fwd_queue_count, 3);
+    CHECK_LL(rt.fwd_queue[0].ids[0], 1);
+    CHECK_LL(rt.fwd_queue[1].ids[0], 2);
+    CHECK_LL(rt.fwd_queue[2].ids[0], 3);
+}
+
+static void test_sequential_desc(void) {
+    PendingMsg msgs[3] = {
+        make_msg(1, 0, 0, 10),
+        make_msg(2, 0, 0, 20),
+        make_msg(3, 0, 0, 30),
+    };
+    rt.cfg.enable_sequential_forwarding = 1;
+    rt.cfg.sequence_direction = 1;
+    process_msgs(&rt, -100123, msgs, 3);
+    CHECK_LL(rt.fwd_queue_count, 3);
+    CHECK_LL(rt.fwd_queue[0].ids[0], 3);
+    CHECK_LL(rt.fwd_queue[1].ids[0], 2);
+    CHECK_LL(rt.fwd_queue[2].ids[0], 1);
+}
+
+static void test_reply_chain_and_parent_duplicate(void) {
+    PendingMsg msgs[2] = {
+        make_msg(10, 0, 3, 200),
+        make_msg(3, 0, 0, 100),
+    };
+    process_msgs(&rt, -100123, msgs, 2);
+    CHECK_LL(rt.fwd_queue_count, 2);
+    CHECK_LL(rt.fwd_queue[0].count, 2);
+    CHECK_LL(rt.fwd_queue[0].ids[0], 3);
+    CHECK_LL(rt.fwd_queue[0].ids[1], 10);
+    CHECK_LL(rt.fwd_queue[1].count, 1);
+    CHECK_LL(rt.fwd_queue[1].ids[0], 3);
+}
+
+static void test_album_batch_ordering(void) {
+    PendingMsg msgs[3] = {
+        make_msg(7, 77, 0, 30),
+        make_msg(3, 77, 0, 10),
+        make_msg(5, 77, 0, 20),
+    };
+    process_msgs(&rt, -100123, msgs, 3);
+    CHECK_LL(rt.fwd_queue_count, 1);
+    CHECK_LL(rt.fwd_queue[0].count, 3);
+    CHECK_LL(rt.fwd_queue[0].ids[0], 3);
+    CHECK_LL(rt.fwd_queue[0].ids[1], 5);
+    CHECK_LL(rt.fwd_queue[0].ids[2], 7);
+}
+
+static void test_album_split_across_batches(void) {
+    PendingMsg first[2] = {
+        make_msg(5, 77, 0, 20),
+        make_msg(3, 77, 0, 10),
+    };
+    process_msgs(&rt, -100123, first, 2);
+    CHECK_LL(rt.fwd_queue_count, 1);
+    CHECK_LL(rt.fwd_queue[0].count, 2);
+
+    PendingMsg second[1] = { make_msg(7, 77, 0, 30) };
+    process_msgs(&rt, -100123, second, 1);
+    CHECK_LL(rt.fwd_queue_count, 2);
+    CHECK_LL(rt.fwd_queue[1].count, 1);
+    CHECK_LL(rt.fwd_queue[1].ids[0], 7);
+}
+
+static void test_album_ignores_reply_parent(void) {
+    PendingMsg m = make_msg(9, 5, 8, 100);
+    process_msgs(&rt, -100123, &m, 1);
+    CHECK_LL(rt.fwd_queue_count, 1);
+    CHECK_LL(rt.fwd_queue[0].count, 1);
+    CHECK_LL(rt.fwd_queue[0].ids[0], 9);
+}
+
+static void test_reply_child_cap(void) {
+    PendingMsg msgs[301];
+    msgs[0] = make_msg(1, 0, 0, 100);
+    for (int i = 1; i < 301; i++)
+        msgs[i] = make_msg(i + 1, 0, 1, 100 + i);
+
+    process_msgs(&rt, -100123, msgs, 301);
+    CHECK_LL(rt.fwd_queue_count, 1);
+    CHECK_LL(rt.fwd_queue[0].count, 256);
+    CHECK_LL(rt.fwd_queue[0].ids[255], 256);
+    CHECK(history_store_has(&rt.history, &rt.cfg, -100123, 301));
+    CHECK_LL(rt.history.count, 301);
+}
+
+static void test_queue_id_cap(void) {
+    long long ids[300];
+    for (int i = 0; i < 300; i++) ids[i] = i + 1;
+    fwd_queue_push(&rt, -100123, ids, 300);
+    CHECK_LL(rt.fwd_queue_count, 1);
+    CHECK_LL(rt.fwd_queue[0].count, MAX_FWD_IDS);
+    CHECK_LL(rt.fwd_queue[0].ids[MAX_FWD_IDS - 1], MAX_FWD_IDS);
+}
+
+static void test_enqueue_marks_history(void) {
+    PendingMsg m = make_msg(55, 0, 0, 100);
+    process_msgs(&rt, -100123, &m, 1);
+    CHECK(history_store_has(&rt.history, &rt.cfg, -100123, 55));
+    CHECK_LL(rt.fwd_queue_count, 1);
+}
+
+static void test_history_window_expiry(void) {
+    history_store_add(&rt.history, &rt.cfg, -1, 100);
+    CHECK(history_store_has(&rt.history, &rt.cfg, -1, 100));
+
+    rt.cfg.history_window_hours = 0;
+    CHECK(history_store_has(&rt.history, &rt.cfg, -1, 100));
+
+    rt.cfg.history_window_hours = 24;
+    set_history_time(-1, 100, time(NULL) - 25 * 3600);
+    CHECK(!history_store_has(&rt.history, &rt.cfg, -1, 100));
+}
+
+static void test_history_prune_removes(void) {
+    history_store_add(&rt.history, &rt.cfg, -1, 1);
+    history_store_add(&rt.history, &rt.cfg, -1, 2);
+    set_history_time(-1, 1, time(NULL) - 25 * 3600);
+    set_history_time(-1, 2, time(NULL) - 25 * 3600);
+
+    history_store_prune(&rt.history, &rt.cfg);
+    CHECK_LL(rt.history.count, 0);
+    CHECK(!history_store_has(&rt.history, &rt.cfg, -1, 1));
+    CHECK(!history_store_has(&rt.history, &rt.cfg, -1, 2));
+}
+
+static void test_history_tombstone_hole(void) {
+    long long first = 0, second = 0;
+    CHECK(find_hash_collision(&first, &second));
+    if (!first || !second) return;
+
+    history_store_add(&rt.history, &rt.cfg, -500, first);
+    history_store_add(&rt.history, &rt.cfg, -500, second);
+    CHECK(history_store_has(&rt.history, &rt.cfg, -500, first));
+    CHECK(history_store_has(&rt.history, &rt.cfg, -500, second));
+
+    set_history_time(-500, first, time(NULL) - 25 * 3600);
+    history_store_prune(&rt.history, &rt.cfg);
+
+    CHECK_LL(rt.history.count, 1);
+    CHECK(history_find_physical(-500, second) >= 0);
+    CHECK(!history_store_has(&rt.history, &rt.cfg, -500, second));
+}
+
+static void test_tracker_load_fields(void) {
+    write_file("seq_tracker.txt",
+               "-111 10 100 5 1\n"
+               "-222 20 200 7\n"
+               "-333 30 300\n");
+    tracker_store_load(&rt.tracker);
+    CHECK_LL(rt.tracker.count, 3);
+    CHECK_LL(tracker_store_get_scan_from(&rt.tracker, -111), 5);
+    CHECK_LL(tracker_store_is_backfill_done(&rt.tracker, -111), 1);
+    CHECK_LL(tracker_store_get_scan_from(&rt.tracker, -222), 7);
+    CHECK_LL(tracker_store_is_backfill_done(&rt.tracker, -222), 0);
+    CHECK_LL(tracker_store_get_scan_from(&rt.tracker, -333), 0);
+    CHECK_LL(tracker_store_is_backfill_done(&rt.tracker, -333), 0);
+}
+
+static void test_tracker_save_roundtrip(void) {
+    tracker_store_set_scan_from(&rt.tracker, -111, 5);
+    tracker_store_set_backfill_done(&rt.tracker, -111, 1);
+    tracker_store_set(&rt.tracker, -111, 9, 100);
+    tracker_store_save(&rt.tracker);
+
+    for (int i = 0; i < rt.tracker.count; i++) free(rt.tracker.entries[i].pending);
+    memset(rt.tracker.entries, 0, sizeof(rt.tracker.entries));
+    rt.tracker.count = 0;
+
+    tracker_store_load(&rt.tracker);
+    CHECK_LL(rt.tracker.count, 1);
+    CHECK_LL(tracker_store_get_scan_from(&rt.tracker, -111), 5);
+    CHECK_LL(tracker_store_is_backfill_done(&rt.tracker, -111), 1);
+    CHECK_LL(rt.tracker.entries[0].last_msg_id, 9);
+    CHECK_LL(rt.tracker.entries[0].last_date, 100);
+}
+
+static void test_tracker_capacity(void) {
+    for (int i = 0; i < 130; i++)
+        tracker_store_set_scan_from(&rt.tracker, -1000 - i, i + 1);
+    CHECK_LL(rt.tracker.count, MAX_SEQ_TRACKER);
+    CHECK_LL(tracker_store_get_scan_from(&rt.tracker, -1000 - 127), 128);
+    CHECK_LL(tracker_store_get_scan_from(&rt.tracker, -1000 - 128), 0);
+}
+
+static void test_tracker_pending_flush(void) {
+    tracker_store_set_scan_from(&rt.tracker, -444, 0);
+    rt.cfg.enable_sequential_forwarding = 1;
+    rt.cfg.sequence_direction = 0;
+
+    tracker_store_pending_append(&rt.tracker, -444, make_msg(20, 0, 0, 200));
+    tracker_store_pending_append(&rt.tracker, -444, make_msg(10, 0, 0, 100));
+    SeqEntry *e = find_tracker(-444);
+    CHECK(e != NULL);
+    CHECK_LL(e->pending_count, 2);
+
+    flush_pending(&rt, -444);
+    CHECK_LL(rt.fwd_queue_count, 2);
+    CHECK_LL(rt.fwd_queue[0].ids[0], 10);
+    CHECK_LL(rt.fwd_queue[1].ids[0], 20);
+    e = find_tracker(-444);
+    CHECK(e != NULL);
+    CHECK_LL(e->pending_count, 0);
+    CHECK(e->pending == NULL);
+}
+
+static void test_dispatch_single(void) {
+    long long ids[1] = { 42 };
+    fwd_queue_push(&rt, -100123, ids, 1);
+    int sent = process_fwd_queue(&rt, NULL);
+
+    CHECK_LL(sent, 1);
+    CHECK_LL(rt.fwd_queue_count, 0);
+    CHECK(strcmp(captured_type, "forwardMessages") == 0);
+    CHECK(strcmp(captured_extra, "fwd_-100123_42") == 0);
+    CHECK_STR_CONTAINS(captured_payload, "\"chat_id\":-100777");
+    CHECK_STR_CONTAINS(captured_payload, "\"from_chat_id\":-100123");
+    CHECK_STR_CONTAINS(captured_payload, "\"message_ids\":[42]");
+}
+
+static void test_dispatch_batch(void) {
+    long long ids[2] = { 3, 5 };
+    fwd_queue_push(&rt, -100123, ids, 2);
+    int sent = process_fwd_queue(&rt, NULL);
+
+    CHECK_LL(sent, 1);
+    CHECK(strcmp(captured_extra, "fwd_-100123_batch") == 0);
+    CHECK_STR_CONTAINS(captured_payload, "\"message_ids\":[3,5]");
+}
+
+static void test_dispatch_delay_gate(void) {
+    long long ids[1] = { 1 };
+    rt.cfg.forward_delay_sec = 3600;
+
+    fwd_queue_push(&rt, -100123, ids, 1);
+    CHECK_LL(process_fwd_queue(&rt, NULL), 1);
+    fwd_queue_push(&rt, -100123, ids, 1);
+    CHECK_LL(process_fwd_queue(&rt, NULL), 0);
+    CHECK_LL(rt.fwd_queue_count, 1);
+
+    rt.cfg.forward_delay_sec = 0;
+    CHECK_LL(process_fwd_queue(&rt, NULL), 1);
+    CHECK_LL(rt.fwd_queue_count, 0);
+}
+
+static int captured_stderr_fd = -1;
+
+static void capture_stderr_begin(void) {
+    fflush(stderr);
+    captured_stderr_fd = dup(STDERR_FILENO);
+    int fd = open("stderr.txt", O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return;
+    dup2(fd, STDERR_FILENO);
+    close(fd);
+}
+
+static void capture_stderr_end(char *out, size_t n) {
+    fflush(stderr);
+    if (captured_stderr_fd >= 0) {
+        dup2(captured_stderr_fd, STDERR_FILENO);
+        close(captured_stderr_fd);
+        captured_stderr_fd = -1;
+    }
+    out[0] = 0;
+    FILE *f = fopen("stderr.txt", "r");
+    if (!f) return;
+    size_t got = fread(out, 1, n - 1, f);
+    out[got] = 0;
+    fclose(f);
+}
+
+static void expect_config_error(const char *json, const char *expected) {
+    write_file("config.json", json);
+    char err[256];
+    capture_stderr_begin();
+    Config cfg;
+    int rc = config_load("config.json", &cfg);
+    capture_stderr_end(err, sizeof(err));
+    CHECK_LL(rc, -1);
+    CHECK(strcmp(err, expected) == 0);
+    config_free(&cfg);
+}
+
+static void test_config_valid_full(void) {
+    write_file("config.json", "{\"api_id\":123456,\"api_hash\":\"dummy\","
+        "\"dest_channel\":\"@me\",\"source_channels\":[\"@a\",\"b\"],"
+        "\"history_file\":\"h.txt\",\"forward_delay_sec\":7,"
+        "\"history_window_hours\":3,\"enable_sequential_forwarding\":true,"
+        "\"sequence_direction\":\"desc\"}");
+    Config cfg;
+    CHECK_LL(config_load("config.json", &cfg), 0);
+    CHECK_LL(cfg.api_id, 123456);
+    CHECK(strcmp(cfg.api_hash, "dummy") == 0);
+    CHECK(strcmp(cfg.dest_channel, "@me") == 0);
+    CHECK_LL(cfg.num_sources, 2);
+    CHECK(strcmp(cfg.source_channels[0], "@a") == 0);
+    CHECK(strcmp(cfg.source_channels[1], "b") == 0);
+    CHECK(strcmp(cfg.history_file, "h.txt") == 0);
+    CHECK_LL(cfg.forward_delay_sec, 7);
+    CHECK_LL(cfg.history_window_hours, 3);
+    CHECK_LL(cfg.enable_sequential_forwarding, 1);
+    CHECK_LL(cfg.sequence_direction, 1);
+    config_free(&cfg);
+}
+
+static void test_config_defaults(void) {
+    write_file("config.json", "{\"api_id\":1,\"api_hash\":\"x\","
+        "\"dest_channel\":\"d\",\"source_channels\":[\"one\"]}");
+    Config cfg;
+    CHECK_LL(config_load("config.json", &cfg), 0);
+    CHECK(strcmp(cfg.history_file, "history.txt") == 0);
+    CHECK_LL(cfg.forward_delay_sec, 1);
+    CHECK_LL(cfg.history_window_hours, 24);
+    CHECK_LL(cfg.enable_sequential_forwarding, 0);
+    CHECK_LL(cfg.sequence_direction, 0);
+    config_free(&cfg);
+}
+
+static void test_config_missing_file(void) {
+    remove("absent.json");
+    char err[256];
+    capture_stderr_begin();
+    Config cfg;
+    int rc = config_load("absent.json", &cfg);
+    capture_stderr_end(err, sizeof(err));
+    CHECK_LL(rc, -1);
+    CHECK(strcmp(err, "Cannot open absent.json\n") == 0);
+    config_free(&cfg);
+}
+
+static void test_config_invalid_json(void) {
+    expect_config_error("{ not json", "Invalid JSON in config.json\n");
+}
+
+static void test_config_empty_file(void) {
+    expect_config_error("", "");
+}
+
+static void test_config_missing_api_id(void) {
+    expect_config_error("{\"api_hash\":\"x\",\"dest_channel\":\"d\",\"source_channels\":[\"a\"]}",
+                        "Missing api_id\n");
+}
+
+static void test_config_missing_api_hash(void) {
+    expect_config_error("{\"api_id\":1,\"dest_channel\":\"d\",\"source_channels\":[\"a\"]}",
+                        "Missing api_hash\n");
+}
+
+static void test_config_missing_dest_channel(void) {
+    expect_config_error("{\"api_id\":1,\"api_hash\":\"x\",\"source_channels\":[\"a\"]}",
+                        "Missing dest_channel\n");
+}
+
+static void test_config_missing_sources(void) {
+    expect_config_error("{\"api_id\":1,\"api_hash\":\"x\",\"dest_channel\":\"d\"}",
+                        "Missing source_channels array\n");
+}
+
+static void test_config_key_case_insensitive(void) {
+    write_file("config.json", "{\"API_ID\":2,\"API_HASH\":\"y\","
+        "\"DEST_CHANNEL\":\"d\",\"SOURCE_CHANNELS\":[\"a\"]}");
+    Config cfg;
+    CHECK_LL(config_load("config.json", &cfg), 0);
+    CHECK_LL(cfg.api_id, 2);
+    CHECK(strcmp(cfg.api_hash, "y") == 0);
+    config_free(&cfg);
+}
+
+static void test_config_boolean_is_strict(void) {
+    write_file("config.json", "{\"api_id\":1,\"api_hash\":\"x\","
+        "\"dest_channel\":\"d\",\"source_channels\":[\"a\"],"
+        "\"enable_sequential_forwarding\":\"true\"}");
+    Config cfg;
+    CHECK_LL(config_load("config.json", &cfg), 0);
+    CHECK_LL(cfg.enable_sequential_forwarding, 0);
+    config_free(&cfg);
+}
+
+static void test_config_direction_values(void) {
+    Config cfg;
+    write_file("config.json", "{\"api_id\":1,\"api_hash\":\"x\","
+        "\"dest_channel\":\"d\",\"source_channels\":[\"a\"],"
+        "\"sequence_direction\":\"ASC\"}");
+    CHECK_LL(config_load("config.json", &cfg), 0);
+    CHECK_LL(cfg.sequence_direction, 0);
+    config_free(&cfg);
+
+    write_file("config.json", "{\"api_id\":1,\"api_hash\":\"x\","
+        "\"dest_channel\":\"d\",\"source_channels\":[\"a\"],"
+        "\"sequence_direction\":\"desc\"}");
+    CHECK_LL(config_load("config.json", &cfg), 0);
+    CHECK_LL(cfg.sequence_direction, 1);
+    config_free(&cfg);
+}
+
+static void test_config_non_string_sources(void) {
+    write_file("config.json", "{\"api_id\":1,\"api_hash\":\"x\","
+        "\"dest_channel\":\"d\",\"source_channels\":[1,null,\"ok\"]}");
+    Config cfg;
+    CHECK_LL(config_load("config.json", &cfg), 0);
+    CHECK_LL(cfg.num_sources, 3);
+    CHECK(strcmp(cfg.source_channels[0], "") == 0);
+    CHECK(strcmp(cfg.source_channels[1], "") == 0);
+    CHECK(strcmp(cfg.source_channels[2], "ok") == 0);
+    config_free(&cfg);
+}
+
+static void test_config_fractional_api_id(void) {
+    write_file("config.json", "{\"api_id\":1.9,\"api_hash\":\"x\","
+        "\"dest_channel\":\"d\",\"source_channels\":[\"a\"]}");
+    Config cfg;
+    CHECK_LL(config_load("config.json", &cfg), 0);
+    CHECK_LL(cfg.api_id, 1);
+    config_free(&cfg);
+}
+
+static void test_config_empty_sources(void) {
+    write_file("config.json", "{\"api_id\":1,\"api_hash\":\"x\","
+        "\"dest_channel\":\"d\",\"source_channels\":[]}");
+    Config cfg;
+    CHECK_LL(config_load("config.json", &cfg), 0);
+    CHECK_LL(cfg.num_sources, 0);
+    config_free(&cfg);
+}
+
+static void set_sources(const char *const *names, int n) {
+    rt.cfg.num_sources = n;
+    rt.cfg.source_channels = calloc(n, sizeof(char *));
+    for (int i = 0; i < n; i++) rt.cfg.source_channels[i] = strdup(names[i]);
+    rt.source_chat_ids = calloc(n, sizeof(long long));
+}
+
+static void test_resolve_next_requests(void) {
+    const char *names[] = { "@a", "b" };
+    set_sources(names, 2);
+    rt.source_count = 2;
+    rt.source_chat_ids[0] = -100111;
+    rt.source_chat_ids[1] = -100222;
+
+    resolve_next(&rt, NULL);
+    CHECK(strcmp(captured_type, "searchPublicChat") == 0);
+    CHECK_STR_CONTAINS(captured_payload, "\"username\":\"a\"");
+    CHECK(strcmp(captured_extra, "resolve_0") == 0);
+    CHECK_LL(rt.resolve_index, 1);
+    CHECK_LL(rt.resolve_active, 1);
+
+    resolve_next(&rt, NULL);
+    CHECK_STR_CONTAINS(captured_payload, "\"username\":\"b\"");
+    CHECK(strcmp(captured_extra, "resolve_1") == 0);
+    CHECK_LL(rt.resolve_index, 2);
+    CHECK_LL(rt.resolve_active, 1);
+
+    resolve_next(&rt, NULL);
+    CHECK_LL(rt.resolve_active, 0);
+    CHECK(strcmp(captured_extra, "resolve_1") == 0);
+}
+
+static void test_resolve_source_handle(void) {
+    const char *names[] = { "a" };
+    set_sources(names, 1);
+    char *argv[] = { NULL, NULL };
+    cJSON *root = cJSON_Parse("{\"id\":-100123}");
+    RequestId id = { REQ_RESOLVE_SOURCE, 0, 0 };
+    resolve_source_handle(&rt, NULL, root, id, argv);
+    cJSON_Delete(root);
+    CHECK_LL(rt.source_chat_ids[0], -100123);
+    CHECK_LL(rt.source_count, 1);
+    CHECK_LL(rt.resolve_index, 1);
+    CHECK_LL(rt.resolve_active, 1);
+    resolve_next(&rt, NULL);
+    CHECK_LL(rt.resolve_active, 0);
+}
+
+static void test_resolve_partial_summary(void) {
+    const char *names[] = { "good", "bad" };
+    set_sources(names, 2);
+    rt.source_count = 1;
+    rt.source_chat_ids[0] = -100111;
+    rt.resolve_index = 2;
+    char err[512];
+    capture_stderr_begin();
+    resolve_next(&rt, NULL);
+    capture_stderr_end(err, sizeof(err));
+    CHECK_LL(rt.resolve_active, 0);
+    CHECK_STR_CONTAINS(err, "WARNING: 1 of 2 source channels failed to resolve:");
+    CHECK_STR_CONTAINS(err, "bad");
+    CHECK(strstr(err, "good") == NULL);
+}
+
+static void test_resolve_dest_handle(void) {
+    const char *names[] = { "a" };
+    set_sources(names, 1);
+    rt.source_count = 1;
+    rt.source_chat_ids[0] = -100111;
+    rt.resolve_index = 1;
+    char *argv[] = { NULL, NULL };
+    cJSON *root = cJSON_Parse("{\"id\":-100999}");
+    RequestId id = { REQ_RESOLVE_DEST, 0, 0 };
+    resolve_dest_handle(&rt, NULL, root, id, argv);
+    cJSON_Delete(root);
+    CHECK_LL(rt.dest_chat_id, -100999);
+    CHECK_LL(rt.dest_resolved, 1);
+    CHECK_LL(rt.resolve_index, 1);
+    CHECK(strcmp(captured_type, "searchPublicChat") == 0);
+    CHECK(strcmp(captured_extra, "resolve_0") == 0);
+}
+
+static void test_getme_handle(void) {
+    char *argv[] = { NULL, NULL };
+    cJSON *root = cJSON_Parse("{\"id\":555}");
+    RequestId id = { REQ_GETME, 0, 0 };
+    getme_handle(&rt, NULL, root, id, argv);
+    cJSON_Delete(root);
+    CHECK(strcmp(captured_type, "createPrivateChat") == 0);
+    CHECK_STR_CONTAINS(captured_payload, "\"user_id\":555");
+    CHECK_STR_CONTAINS(captured_payload, "\"force\":true");
+    CHECK(strcmp(captured_extra, "resolve_dest") == 0);
+}
+
+typedef void (*test_fn)(void);
+
+static void run_test(const char *name, test_fn fn) {
+    int before = failures;
+    reset_state();
+    fn();
+    printf("%s %s\n", failures == before ? "ok  " : "FAIL", name);
+}
+
+int main(void) {
+    char tmpl[] = "/tmp/tgf-tests-XXXXXX";
+    char dir[256];
+
+    if (!mkdtemp(tmpl)) {
+        perror("mkdtemp");
+        return 1;
+    }
+    snprintf(dir, sizeof(dir), "%s", tmpl);
+    if (chdir(dir) != 0) {
+        perror("chdir");
+        return 1;
+    }
+
+    rt.cfg.history_file = strdup("history.txt");
+    if (!rt.cfg.history_file) return 1;
+
+    run_test("empty_batch", test_empty_batch);
+    run_test("single_message", test_single_message);
+    run_test("two_messages_wire_order", test_two_messages_wire_order);
+    run_test("sequential_asc", test_sequential_asc);
+    run_test("sequential_desc", test_sequential_desc);
+    run_test("reply_chain_and_parent_duplicate", test_reply_chain_and_parent_duplicate);
+    run_test("album_batch_ordering", test_album_batch_ordering);
+    run_test("album_split_across_batches", test_album_split_across_batches);
+    run_test("album_ignores_reply_parent", test_album_ignores_reply_parent);
+    run_test("reply_child_cap", test_reply_child_cap);
+    run_test("queue_id_cap", test_queue_id_cap);
+    run_test("enqueue_marks_history", test_enqueue_marks_history);
+    run_test("history_window_expiry", test_history_window_expiry);
+    run_test("history_prune_removes", test_history_prune_removes);
+    run_test("history_tombstone_hole", test_history_tombstone_hole);
+    run_test("tracker_load_fields", test_tracker_load_fields);
+    run_test("tracker_save_roundtrip", test_tracker_save_roundtrip);
+    run_test("tracker_capacity", test_tracker_capacity);
+    run_test("tracker_pending_flush", test_tracker_pending_flush);
+    run_test("dispatch_single", test_dispatch_single);
+    run_test("dispatch_batch", test_dispatch_batch);
+    run_test("dispatch_delay_gate", test_dispatch_delay_gate);
+    run_test("config_valid_full", test_config_valid_full);
+    run_test("config_defaults", test_config_defaults);
+    run_test("config_missing_file", test_config_missing_file);
+    run_test("config_invalid_json", test_config_invalid_json);
+    run_test("config_empty_file", test_config_empty_file);
+    run_test("config_missing_api_id", test_config_missing_api_id);
+    run_test("config_missing_api_hash", test_config_missing_api_hash);
+    run_test("config_missing_dest_channel", test_config_missing_dest_channel);
+    run_test("config_missing_sources", test_config_missing_sources);
+    run_test("config_key_case_insensitive", test_config_key_case_insensitive);
+    run_test("config_boolean_is_strict", test_config_boolean_is_strict);
+    run_test("config_direction_values", test_config_direction_values);
+    run_test("config_non_string_sources", test_config_non_string_sources);
+    run_test("config_fractional_api_id", test_config_fractional_api_id);
+    run_test("config_empty_sources", test_config_empty_sources);
+    run_test("resolve_next_requests", test_resolve_next_requests);
+    run_test("resolve_source_handle", test_resolve_source_handle);
+    run_test("resolve_partial_summary", test_resolve_partial_summary);
+    run_test("resolve_dest_handle", test_resolve_dest_handle);
+    run_test("getme_handle", test_getme_handle);
+
+    reset_state();
+    free(rt.cfg.history_file);
+    rt.cfg.history_file = NULL;
+    chdir("/");
+    rmdir(dir);
+
+    printf("\n%lld checks, %d failure(s)\n", (long long)checks, failures);
+    return failures == 0 ? 0 : 1;
+}

@@ -3,6 +3,7 @@
 
 #define TD_SOURCE "lib/td"
 #define TD_BUILD  "lib/td/build"
+#define TEST_BIN  "tests/tgf_tests"
 
 static void clean(void)
 {
@@ -16,7 +17,7 @@ static void clean(void)
     cmd_run(&rm);
 #else
     Cmd rm = {0};
-    cmd_append(&rm, "rm", "-rf", TD_BUILD, "tgf", "nob.old");
+    cmd_append(&rm, "rm", "-rf", TD_BUILD, "tgf", TEST_BIN, "nob.old");
     cmd_run(&rm);
 #endif
 }
@@ -76,6 +77,83 @@ static int td_already_built(void)
            nob_file_exists(TD_BUILD "/tdjson.dll");
 }
 
+static int run_tests(void)
+{
+    Cmd cmd = {0};
+    nob_cc(&cmd);
+    nob_cc_flags(&cmd);
+    cmd_append(&cmd, "-g", "-O1", "-fno-omit-frame-pointer");
+    cmd_append(&cmd, "-fsanitize=address,undefined");
+    cmd_append(&cmd, "-I.", "-Isrc");
+    nob_cc_output(&cmd, TEST_BIN);
+    cmd_append(&cmd, "tests/test_main.c", "src/tracker.c", "src/history.c", "src/forward.c",
+               "src/config.c", "src/resolve.c", "cJSON.c");
+
+    if (!cmd_run(&cmd)) return 0;
+
+    cmd.count = 0;
+    cmd_append(&cmd, TEST_BIN);
+    return cmd_run(&cmd);
+}
+
+static int run_sanitize(void)
+{
+    Cmd cmd = {0};
+    nob_cc(&cmd);
+    nob_cc_flags(&cmd);
+    cmd_append(&cmd, "-g", "-O1", "-fno-omit-frame-pointer");
+    cmd_append(&cmd, "-fsanitize=address,undefined");
+    cmd_append(&cmd, "-I.", "-Isrc");
+
+#ifdef _WIN32
+    cmd_append(&cmd, "-DTGF_NOGUI");
+
+    if (!nob_file_exists("tdjson.dll") && !nob_file_exists("tdjson.lib")) {
+        if (!td_already_built()) {
+            if (!ensure_td_source()) return 1;
+            if (!build_td()) return 1;
+        }
+        cmd_append(&cmd, "-I" TD_SOURCE);
+        cmd_append(&cmd, "-I" TD_BUILD);
+        cmd_append(&cmd, "-L" TD_BUILD);
+        cmd_append(&cmd, "-ltdjson");
+    } else {
+        cmd_append(&cmd, "-ltdjson");
+    }
+#else
+    if (!check_system_td()) {
+        if (!td_already_built()) {
+            if (!ensure_td_source()) return 1;
+            if (!build_td()) return 1;
+        }
+        cmd_append(&cmd, "-I" TD_SOURCE);
+        cmd_append(&cmd, "-I" TD_BUILD);
+        cmd_append(&cmd, "-L" TD_BUILD);
+        cmd_append(&cmd, "-ltdjson");
+        cmd_append(&cmd, "-Wl,-rpath,$ORIGIN/" TD_BUILD);
+    } else {
+        cmd_append(&cmd, "-ltdjson");
+    }
+    cmd_append(&cmd, "-lncurses");
+#endif
+
+    cmd_append(&cmd, "-I.", "-Isrc");
+    cmd_append(&cmd, "cJSON.c");
+    nob_cc_output(&cmd, "tgf");
+    cmd_append(&cmd, "src/tracker.c");
+    cmd_append(&cmd, "src/history.c");
+    cmd_append(&cmd, "src/forward.c");
+    cmd_append(&cmd, "src/config.c");
+    cmd_append(&cmd, "src/main.c");
+    cmd_append(&cmd, "src/auth.c");
+    cmd_append(&cmd, "src/resolve.c");
+    cmd_append(&cmd, "src/poll.c");
+    cmd_append(&cmd, "src/transport.c");
+    cmd_append(&cmd, "src/ui.c");
+
+    return cmd_run(&cmd);
+}
+
 int main(int argc, char **argv)
 {
     GO_REBUILD_URSELF(argc, argv);
@@ -83,6 +161,24 @@ int main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], "clean") == 0) {
         clean();
         return 0;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "test") == 0) {
+#ifdef _WIN32
+        nob_log(NOB_ERROR, "test target is not supported on Windows yet");
+        return 1;
+#else
+        return run_tests() ? 0 : 1;
+#endif
+    }
+
+    if (argc > 1 && strcmp(argv[1], "sanitize") == 0) {
+#ifdef _WIN32
+        nob_log(NOB_ERROR, "sanitize target is not supported on Windows yet");
+        return 1;
+#else
+        return run_sanitize() ? 0 : 1;
+#endif
     }
 
     Cmd cmd = {0};
@@ -121,13 +217,20 @@ int main(int argc, char **argv)
     cmd_append(&cmd, "-lncurses");
 #endif
 
+    cmd_append(&cmd, "-I.", "-Isrc");
     cmd_append(&cmd, "cJSON.c");
     cmd_append(&cmd, "-O3");
     nob_cc_output(&cmd, "tgf");
-    cmd_append(&cmd, "tracker.c");
-    cmd_append(&cmd, "history.c");
-    cmd_append(&cmd, "forward.c");
-    cmd_append(&cmd, "tgf.c");
+    cmd_append(&cmd, "src/tracker.c");
+    cmd_append(&cmd, "src/history.c");
+    cmd_append(&cmd, "src/forward.c");
+    cmd_append(&cmd, "src/config.c");
+    cmd_append(&cmd, "src/main.c");
+    cmd_append(&cmd, "src/auth.c");
+    cmd_append(&cmd, "src/resolve.c");
+    cmd_append(&cmd, "src/poll.c");
+    cmd_append(&cmd, "src/transport.c");
+    cmd_append(&cmd, "src/ui.c");
 
     if (!cmd_run(&cmd)) return 1;
     return 0;
