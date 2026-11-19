@@ -4,7 +4,7 @@ Status: baseline · Owner: `src/main.c`, `src/auth.c`, `src/resolve.c` · Depend
 
 ## 1. Startup sequence
 
-Exact order in `main` (`src/main.c:80-104`):
+Exact order in `main` (`src/main.c:80-105`):
 
 1. `setvbuf(stdout/stderr, _IONBF)` — unbuffered output (`src/main.c:82-83`).
 2. `ui_init` selects the stderr or ncurses sink from `argv[1]`
@@ -18,13 +18,14 @@ Exact order in `main` (`src/main.c:80-104`):
    own creation-time log lines may reach stderr before this takes effect.
 7. `calloc(num_sources, sizeof(long long))` for `source_chat_ids`; failure
    destroys the client and exits **1** (`src/main.c:93-94`).
-8. `history_store_load()`; `tracker_store_load()` only if sequential mode is
-   enabled (`src/main.c:96-97`).
+8. `history_store_load()`; `fwd_queue_load()` resumes persisted forward jobs
+   (05 §5); `tracker_store_load()` only if sequential mode is enabled
+   (`src/main.c:96-98`).
 9. `signal(SIGINT)`, `signal(SIGTERM)` → set `keep_running = false`
-   (`src/main.c:98-99`, `src/main.c:15-18`).
-10. `getAuthorizationState` (`src/main.c:100`).
-11. Enter the loop; `last_poll = 0`, `last_prune = 0` (`src/main.c:102-104`,
-    `src/main.c:146-147`).
+   (`src/main.c:99-100`, `src/main.c:15-18`).
+10. `getAuthorizationState` (`src/main.c:101`).
+11. Enter the loop; `last_poll = 0`, `last_prune = 0` (`src/main.c:103-105`,
+    `src/main.c:147-148`).
 
 No CLI flags affect startup beyond `-d` (06). No config path override exists.
 
@@ -38,7 +39,7 @@ JSON (`strstr`), not by reading the state object’s `@type` (`src/auth.c:19-71`
 `authorizationState` update with no recognized state causes no action.
 
 The main loop routes `updateAuthorizationState` directly to `auth_handle`
-(`src/main.c:112-113`); there is no separate update path.
+(`src/main.c:113-114`); there is no separate update path.
 
 ### 2.2 States handled
 
@@ -145,7 +146,7 @@ configured names, space-separated, failed entries only).
 
 ## 5. Main loop
 
-Pseudo-code (`src/main.c:104-148`):
+Pseudo-code (`src/main.c:105-149`):
 
 ```
 while (keep_running):
@@ -188,7 +189,7 @@ Consequences:
 ## 6. Shutdown
 
 SIGINT/SIGTERM only clear `keep_running` (`src/main.c:15-18`). The loop exits after the
-current `receive` returns (≤1 s) and cleanup runs (`src/main.c:150-166`):
+current `receive` returns (≤1 s) and cleanup runs (`src/main.c:151-167`):
 
 - free every non-NULL `history_set` entry, the table, and `history_time`;
 - free each queued job's heap `ids`, then the `fwd_queue` ring array;
@@ -197,9 +198,10 @@ current `receive` returns (≤1 s) and cleanup runs (`src/main.c:150-166`):
   `api_hash`, `dest_channel`, `history_file`;
 - `td_json_client_destroy`.
 
-It does **not** flush the forward queue, flush backfill pending buffers, free
-`seq_tracker[i].pending`, save the tracker, or close/checkpoint anything else.
-Queued work silently disappears (TD-02, TD-03). The ncurses terminal is
+The forward queue is already persisted (05 §5) and resumes on the next run
+(TD-03 addressed). It does **not** flush backfill pending buffers, free
+`seq_tracker[i].pending`, save the tracker, or close/checkpoint anything else;
+pending backfill work is lost (TD-02, Step 4.4b). The ncurses terminal is
 restored by `atexit(ncurses_cleanup)`.
 
 Exit codes: `0` on normal loop exit; `1` for config load failure, empty
@@ -246,3 +248,4 @@ other process state is left to the OS. No other exit path.
 | 2026-11-17 | Step 4.1: Destination resolution failure now fatal (exit 1); all-sources-failed and empty-sources now fatal (exit 1); failed sources summary printed |
 | 2026-11-19 | Step 4.1 restored after loss in the RequestId seam rewrite: fatal destination/source resolution re-implemented with clean client destroy, empty-sources startup check, failed-source WARNING summary format pinned, dashboard gated on full resolution; fixed resolve_dest misrouting in request_id_from_extra; verified SC-01-03/04/05/06 and SC-06-05 against a live cached session; refreshed citations |
 | 2026-11-19 | Step 4.3: shutdown frees the in-flight job; queued and in-flight work is still dropped on exit (TD-03, Step 4.4) |
+| 2026-11-19 | Step 4.4a: startup loads fwd_queue.txt; queued work survives restart (TD-03 addressed); pending backfill still lost (TD-02) |

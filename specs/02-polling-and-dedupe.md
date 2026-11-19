@@ -6,7 +6,7 @@ Status: baseline · Owner: `src/poll.c` (`poll_channels`, `history_response`), `
 
 Polling is time-driven, never event-driven. `poll_channels` (`src/poll.c:7-17`)
 runs when the gate in §1.1 is true and `now - last_poll >= 5`
-(`src/main.c:123-129`). There is no `updateNewMessage` subscription; new posts are
+(`src/main.c:124-130`). There is no `updateNewMessage` subscription; new posts are
 discovered only by re-reading history.
 
 ### 1.1 Gate
@@ -50,7 +50,7 @@ completion path (04 §3.5); in normal mode it is a no-op.
 
 Memory ownership: `main.c` parses each response once (`cJSON_Parse`) and calls
 `cJSON_Delete(root)` exactly once after the handler returns
-(`src/main.c:107-118`). Response handlers, including `history_response`, read
+(`src/main.c:108-119`). Response handlers, including `history_response`, read
 from `root` but must not free it; deleting `root` in a handler double-frees
 (`src/poll.c` backfill and completion paths previously did).
 
@@ -95,7 +95,7 @@ Notes:
   returns unique ids.
 - `history_has` uses the **message’s own `chat_id` field**
   (`src/poll.c:130`, `133`), while `process_msgs` records with `src_chat_id`
-  (`src/forward.c:124`). For channel posts these are identical. For any response
+  (`src/forward.c:170`). For channel posts these are identical. For any response
   where they differ, dedupe and recording use different keys (TD-11).
 - Memory: one temporary array of up to 10,000 `PendingMsg` (32 B each) per
   response.
@@ -152,7 +152,7 @@ An expired entry is **not removed by lookup**; it stays until pruning.
 - Else: insert, set timestamp `now`, increment `count`, append
   `"<key> <now>\n"` to `history_file`.
 - Called from `process_msgs` **before** the job can be dispatched
-  (`src/forward.c:123-125`). Marking therefore means "enqueued", not
+  (`src/forward.c:169-171`). Marking therefore means "enqueued", not
   "delivered"; delivery is pursued by the retry/flood-wait policy in 03 §7
   (TD-01, Step 4.3). Marking is never removed on failure.
 - On OOM (`strdup` failure) the entry is silently not recorded; the file is not
@@ -160,8 +160,8 @@ An expired entry is **not removed by lookup**; it stays until pruning.
 
 ### 3.5 Prune
 
-`history_store_prune` (`src/history.c:104-127`) runs from the main loop when
-`now - last_prune >= 1200` (20 min, `src/main.c:146-147`). `last_prune` starts at 0,
+`history_store_prune` (`src/history.c:104-133`) runs from the main loop when
+`now - last_prune >= 1200` (20 min, `src/main.c:147-148`). `last_prune` starts at 0,
 so a prune runs on the **first loop iteration** (before authorization) and
 every 20 minutes after that.
 
@@ -170,7 +170,8 @@ every 20 minutes after that.
   free, set slot to NULL, decrement `count`.
 - If anything was pruned, rehash the survivors into a fresh table of the same
   size (`history_rehash`), eliminating probe-chain holes (TD-04, fixed), then
-  rewrite the file with live entries only. If the rehash allocation fails,
+  rewrite the file with live entries only via `<history_file>.tmp` + `rename`
+  (crash-safe, TD-27 addressed). If the rehash allocation fails,
   `ui_oom` reports and the holes remain until the next successful prune
   (degraded, pre-fix behavior).
 - Publish `History pruned <n> old entries`.
@@ -238,3 +239,4 @@ Changing `history_window_hours` between runs changes both behaviors at once:
 | 2026-11-19 | As-built refresh: normal path no longer writes `batch_oldest_id` (TD-24); OOM status routed via `ui_oom` (TD-19, same text); refreshed citations |
 | 2026-11-19 | Step 4.2: prune rehashes survivors (TD-04 fixed — fewer duplicates); load skips lines with no parsable token (TD-29 fixed); refreshed store field names; SC-02-05 extended |
 | 2026-11-19 | Step 4.3 cross-reference: marking stays at enqueue; delivery pursued by 03 §7 retry policy |
+| 2026-11-19 | Step 4.4a: prune rewrite is tmp+rename (TD-27 addressed) |

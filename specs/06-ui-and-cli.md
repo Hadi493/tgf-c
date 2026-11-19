@@ -63,7 +63,7 @@ after `authorized` in dashboard mode. Consequences:
 
 Initialized on the first loop iteration where `argv[1] == NULL && authorized
 && dest_resolved && source_count >= 1 && !resolve_active`
-(`src/main.c:130-144`). The full-resolution gate (Step 4.1) ensures no
+(`src/main.c:131-145`). The full-resolution gate (Step 4.1) ensures no
 dashboard starts on any fatal resolution path:
 
 ```
@@ -105,7 +105,7 @@ Observations:
   `num_sources`.
 - `FORWARDED from` is the **last source whose forward response succeeded**
   (`src_name`, default `"unknown"`), not a live per-message log
-  (`src/forward.c:184-196`). `update_action_msg` (`src/ui.c:73-77`) is called immediately
+  (`src/forward.c:233-245`). `update_action_msg` (`src/ui.c:73-77`) is called immediately
   after each full redraw (`src/ui.c:83-86`), so it is currently redundant: the
   line changes only on the next 1 Hz refresh, not between refreshes.
 - The status row disappears one refresh after it is printed.

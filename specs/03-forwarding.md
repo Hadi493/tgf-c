@@ -4,7 +4,7 @@ Status: baseline · Owner: `src/forward.c`, `src/main.c` (`process_fwd_queue` ca
 
 ## 1. Input contract
 
-`process_msgs(src_chat_id, msgs, count)` (`src/forward.c:116`) receives messages that
+`process_msgs(src_chat_id, msgs, count)` (`src/forward.c:162`) receives messages that
 already passed id-zero, dedupe, and cutoff filters. It performs no additional
 filtering. It is called from two places:
 
@@ -15,7 +15,7 @@ filtering. It is called from two places:
 ## 2. Ordering
 
 When sequential mode is **on** and `count > 1`, the array is sorted in place
-before grouping (`src/forward.c:48-49`):
+before grouping (`src/forward.c:94-95`):
 
 | `sequence_direction` | Comparator | Order |
 |---|---|---|
@@ -28,14 +28,14 @@ When sequential mode is **off**, the array is not sorted; wire order
 Intra-job ordering is **always ascending by message id**, regardless of
 `sequence_direction`:
 
-- reply chain ids are bubble-sorted ascending (`src/forward.c:60-62`);
-- album ids are sorted ascending by message id (`src/forward.c:84-88`).
+- reply chain ids are bubble-sorted ascending (`src/forward.c:106-108`);
+- album ids are sorted ascending by message id (`src/forward.c:130-134`).
 
 `desc` therefore orders batches, not the messages inside a batch.
 
 ## 3. Reply chains (depth 1)
 
-For a non-album message at index `i` (`src/forward.c:50-77`):
+For a non-album message at index `i` (`src/forward.c:96-123`):
 
 1. Build `ids` (max 256):
    - if `reply_to_msg_id != 0`, append it first;
@@ -68,7 +68,7 @@ Consequences (all current behavior, not bugs to fix in a structural refactor):
 
 ## 4. Albums
 
-For an album message (`media_album_id != 0`, `src/forward.c:78-98`):
+For an album message (`media_album_id != 0`, `src/forward.c:124-144`):
 
 1. Collect **all ungrouped** messages in the batch with the same
    `media_album_id` into `album_indices[256]`. There is no bounds check; the
@@ -100,8 +100,9 @@ typedef struct {
 (`src/tgf.h:37-42`). The queue is a ring buffer of jobs with a head index
 (`fwd_queue_head`), capacity starting at 1024 and doubling
 (`src/forward.c:3-20`). Each job's ids are heap-allocated to `count`, so a
-single-message job costs ~48 bytes (TD-25, addressed). It lives only in
-memory (durability is TD-03, Step 4.4).
+single-message job costs ~48 bytes (TD-25, addressed). It is persisted to
+`fwd_queue.txt` after every mutation (05 §5); a restart resumes the queue
+(TD-03, addressed).
 
 At most one job is **in flight**: dispatch moves the head job into
 `rt.fwd_inflight` (`fwd_inflight_active`, `fwd_inflight_time`); the slot is
@@ -115,7 +116,7 @@ resolved only by the response or the 60 s timeout (§6, §7).
 
 ### 5.2 Dispatch
 
-`process_fwd_queue` (`src/forward.c:152-182`) runs once per main-loop tick and:
+`process_fwd_queue` (`src/forward.c:200-231`) runs once per main-loop tick and:
 
 1. If a job is in flight: when `now - fwd_inflight_time > FWD_TIMEOUT_SEC`
    (60 s), publish `Forward timed out` and take the retryable-failure path
@@ -144,6 +145,10 @@ resolved only by the response or the 60 s timeout (§6, §7).
    index (O(1)).
 9. Sets `fwd_last_time = now`, `fwd_inflight_time = now`, and returns 1.
 
+Every mutation (enqueue batch, dispatch, confirm, requeue, drop) rewrites
+`fwd_queue.txt` atomically, including the in-flight job until confirmed
+(05 §5).
+
 At most **one job per loop tick** and at most **one in-flight request**; the
 next dispatch waits for the response or the timeout. With
 `forward_delay_sec >= 1`, wall-clock spacing is at least that many seconds
@@ -159,16 +164,16 @@ size (~256 × 20 chars) fits, but there is no rejection path.
 ## 6. Response handling
 
 All `forwardMessages` errors arrive as `@type == "error"` and are routed to
-`on_error`, not `on_response` (`src/main.c:114-115`). `on_error` prints:
+`on_error`, not `on_response` (`src/main.c:115-116`). `on_error` prints:
 
 ```
 ERROR [fwd_<...>] code=<n>: <message>
 ```
 
 via `ui_status`, then calls `forward_error_handle(rt, id, code, message)`
-(`src/forward.c:198-216`) for `REQ_FORWARD_ONE`/`REQ_FORWARD_BATCH`.
+(`src/forward.c:247-265`) for `REQ_FORWARD_ONE`/`REQ_FORWARD_BATCH`.
 
-Success (`forward_handle`, `src/forward.c:184-196`):
+Success (`forward_handle`, `src/forward.c:233-245`):
 
 - the source chat id arrives in the typed `RequestId` decoded from the extra
   (`src/main.c:28-32`); single-id tags use `fwd_<chat>_<id>`, batch tags
@@ -218,11 +223,11 @@ success. Un-marking the dedupe entry on failure is deliberately **not** done
   Known edge: a late response for the same chat after a timeout-retry can
   resolve the new in-flight job early; at-least-once semantics tolerate the
   resulting extra retry or drop.
-- **Loss residuals**: a restart discards the queue and the in-flight job
-  (TD-03, Step 4.4); a re-queue OOM drops the job (TD-19, reported via
-  `ui_oom`); once the queue is durable, a crash between send and response can
-  re-forward a message after restart (at-least-once duplicates are possible
-  for resumed jobs).
+- **Loss residuals**: a restart resumes the queue and re-queues the in-flight
+  job (05 §5, TD-03 addressed); a crash between send and response can
+  re-forward that job (at-least-once duplicate). A re-queue OOM drops the job
+  (TD-19, reported via `ui_oom`); a queue-save failure leaves the queue in
+  RAM only (05 §5.2).
 - There is no dedupe un-marking anywhere.
 
 ## 8. Caps and buffers
@@ -232,8 +237,8 @@ success. Un-marking the dedupe entry on failure is deliberately **not** done
 | Ids per job | 256 (`MAX_FWD_IDS`) | extra reply children marked but not forwarded; album array may overflow |
 | Reply chain depth | 1 | grandparents omitted |
 | Request buffer | 8 KiB (`src/transport.c:10`) | truncated JSON still sent |
-| Id string buffer | 8 KiB (`src/forward.c:164`) | truncated id list |
-| Payload buffer | 16 KiB (`src/forward.c:169`) | truncated JSON |
+| Id string buffer | 8 KiB (`src/forward.c:212`) | truncated id list |
+| Payload buffer | 16 KiB (`src/forward.c:217`) | truncated JSON |
 | Queue capacity | unbounded growth | ring buffer doubles from 1024; ~48 B + 8 B/id per job |
 | Retry budget | 3 attempts (`MAX_FWD_ATTEMPTS`) | job dropped with a status line |
 | In-flight timeout | 60 s (`FWD_TIMEOUT_SEC`) | retryable-failure path |
@@ -268,7 +273,7 @@ success. Un-marking the dedupe entry on failure is deliberately **not** done
 | SC-03-04 | Two single posts, `forward_delay_sec: 10`, `-d` | `FORWARDED` lines at least 10 s apart |
 | SC-03-05 | `sequence_direction: desc` with several posts | Batches newest-first; reply/album members still ascending |
 | SC-03-06 | Revoke bot/user permission to post in destination | `ERROR [fwd_...] code=403` + `Forward dropped (permanent error 403)`; no retry |
-| SC-03-07 | Kill the process with several jobs queued | Queue is empty on restart; those posts are not forwarded |
+| SC-03-07 | Kill the process with several jobs queued | Queue resumes on restart; queued posts are forwarded (in-flight job may duplicate) |
 | SC-03-08 | Album arrives across two polls (slow source) | Two partial albums in destination |
 | SC-03-09 | Trigger a flood wait (rapid forwards) | `Flood wait: pausing Ns`; dispatch resumes after the pause; no messages lost |
 | SC-03-10 | Transient forward error that later succeeds | job retried; message delivered; `FORWARDED` line on success |
@@ -282,3 +287,4 @@ success. Un-marking the dedupe entry on failure is deliberately **not** done
 | 2026-11-17 | Step 2: moved forwarding into `src/`; refreshed citations |
 | 2026-11-19 | As-built refresh for Step 3: ring-buffer queue with heap id payloads (TD-25), head-index pop, RequestId-based response handling, dead error branch removed (TD-24); observable pacing/grouping unchanged; refreshed citations |
 | 2026-11-19 | Step 4.3: at-least-once delivery — in-flight slot, bounded retry (3 attempts), flood-wait pause, permanent-drop and timeout statuses, stale-response guard; marking stays at enqueue (un-mark option rejected); TD-01 partially addressed, TD-06 addressed; restart loss remains TD-03 (Step 4.4) |
+| 2026-11-19 | Step 4.4a: queue + in-flight persisted to fwd_queue.txt (05 §5), resume on restart; TD-03 addressed; SC-03-07 updated |

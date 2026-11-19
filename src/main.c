@@ -94,6 +94,7 @@ int main(int argc, char *argv[]) {
     if (!rt.source_chat_ids) { td_json_client_destroy(client); return 1; }
 
     history_store_load(&rt.history, &rt.cfg);
+    fwd_queue_load(&rt);
     if (rt.cfg.enable_sequential_forwarding) tracker_store_load(&rt.tracker);
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);

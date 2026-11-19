@@ -204,6 +204,8 @@ void tracker_store_pending_append(TrackerStore *ts, long long chat_id, PendingMs
 void flush_pending(Runtime *rt, long long src_chat_id);
 
 void fwd_queue_push(Runtime *rt, long long src_chat_id, const long long *ids, int count);
+void fwd_queue_save(Runtime *rt);
+void fwd_queue_load(Runtime *rt);
 int  process_fwd_queue(Runtime *rt, void *client);
 void process_msgs(Runtime *rt, long long src_chat_id, PendingMsg *msgs, int count);
 GroupResult group_batch(const PendingMsg *msgs, int count, int order);

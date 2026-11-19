@@ -117,12 +117,18 @@ void history_store_prune(HistoryStore *hs, const Config *cfg) {
     }
     if (!pruned) return;
     history_rehash(hs, hs->set_size);
-    FILE *f = fopen(cfg->history_file, "w");
-    if (!f) return;
+    size_t tn = strlen(cfg->history_file) + 5;
+    char *tmp = malloc(tn);
+    if (!tmp) { ui_oom("OOM: history prune path"); return; }
+    snprintf(tmp, tn, "%s.tmp", cfg->history_file);
+    FILE *f = fopen(tmp, "w");
+    if (!f) { free(tmp); return; }
     for (int i = 0; i < hs->set_size; i++) {
         if (hs->set[i])
             fprintf(f, "%s %lld\n", hs->set[i], (long long)hs->time[i]);
     }
     fclose(f);
+    rename(tmp, cfg->history_file);
+    free(tmp);
     char b[80]; snprintf(b, sizeof(b), "History pruned %d old entries", pruned); ui_status(b);
 }

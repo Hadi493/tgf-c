@@ -125,6 +125,9 @@ static void reset_state(void) {
     remove("seq_tracker.txt");
     remove("config.json");
     remove("stderr.txt");
+    remove("fwd_queue.txt");
+    remove("fwd_queue.txt.tmp");
+    remove("history.txt.tmp");
 }
 
 static PendingMsg make_msg(long long id, long long album, long long reply, long long date) {
@@ -790,6 +793,82 @@ static void test_forward_retry_tail_order(void) {
     CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].retries, 1);
 }
 
+static void test_queue_save_load_roundtrip(void) {
+    long long a[2] = { 5, 6 }, b[1] = { 9 };
+    fwd_queue_push(&rt, -100123, a, 2);
+    fwd_queue_push(&rt, -100456, b, 1);
+    rt.fwd_queue[(rt.fwd_queue_head + 1) % rt.fwd_queue_cap].retries = 2;
+    fwd_queue_save(&rt);
+    for (int i = 0; i < rt.fwd_queue_count; i++)
+        free(rt.fwd_queue[(rt.fwd_queue_head + i) % rt.fwd_queue_cap].ids);
+    rt.fwd_queue_count = 0;
+    rt.fwd_queue_head = 0;
+    fwd_queue_load(&rt);
+    CHECK_LL(rt.fwd_queue_count, 2);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].src_chat_id, -100123);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].count, 2);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].ids[1], 6);
+    int t = (rt.fwd_queue_head + 1) % rt.fwd_queue_cap;
+    CHECK_LL(rt.fwd_queue[t].src_chat_id, -100456);
+    CHECK_LL(rt.fwd_queue[t].retries, 2);
+}
+
+static void test_queue_load_inflight_requeued(void) {
+    long long a[1] = { 7 };
+    fwd_queue_push(&rt, -100123, a, 1);
+    CHECK_LL(process_fwd_queue(&rt, NULL), 1);
+    free(rt.fwd_inflight.ids);
+    rt.fwd_inflight.ids = NULL;
+    rt.fwd_inflight_active = false;
+    rt.fwd_queue_count = 0;
+    rt.fwd_queue_head = 0;
+    fwd_queue_load(&rt);
+    CHECK_LL(rt.fwd_queue_count, 1);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].ids[0], 7);
+}
+
+static void test_queue_load_corrupt_skipped(void) {
+    write_file("fwd_queue.txt", "\n-100\n-100 0\n-100 1 5 6\n");
+    fwd_queue_load(&rt);
+    CHECK_LL(rt.fwd_queue_count, 1);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].count, 2);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].retries, 1);
+}
+
+static void test_queue_persist_on_dispatch_and_confirm(void) {
+    long long a[1] = { 7 };
+    fwd_queue_push(&rt, -100123, a, 1);
+    CHECK_LL(process_fwd_queue(&rt, NULL), 1);
+    FILE *f = fopen("fwd_queue.txt", "r");
+    CHECK(f != NULL);
+    char line[256];
+    char *got = f ? fgets(line, sizeof(line), f) : NULL;
+    if (f) fclose(f);
+    CHECK(got != NULL);
+    if (got) CHECK_STR_CONTAINS(line, "-100123 0 7");
+    char *argv[] = { NULL, NULL };
+    RequestId rid = { REQ_FORWARD_ONE, -100123, 7 };
+    forward_handle(&rt, NULL, NULL, rid, argv);
+    f = fopen("fwd_queue.txt", "r");
+    CHECK(f != NULL);
+    got = f ? fgets(line, sizeof(line), f) : NULL;
+    if (f) fclose(f);
+    CHECK(got == NULL);
+}
+
+static void test_history_prune_leaves_no_tmp(void) {
+    history_store_add(&rt.history, &rt.cfg, -1, 1);
+    set_history_time(-1, 1, time(NULL) - 25 * 3600);
+    history_store_prune(&rt.history, &rt.cfg);
+    CHECK_LL(rt.history.count, 0);
+    FILE *f = fopen("history.txt.tmp", "r");
+    CHECK(f == NULL);
+    if (f) fclose(f);
+    f = fopen("history.txt", "r");
+    CHECK(f != NULL);
+    if (f) fclose(f);
+}
+
 static int captured_stderr_fd = -1;
 
 static void capture_stderr_begin(void) {
@@ -1105,6 +1184,7 @@ int main(void) {
     run_test("history_window_expiry", test_history_window_expiry);
     run_test("history_prune_removes", test_history_prune_removes);
     run_test("history_prune_repairs_chains", test_history_prune_repairs_chains);
+    run_test("history_prune_leaves_no_tmp", test_history_prune_leaves_no_tmp);
     run_test("history_load_skips_malformed", test_history_load_skips_malformed);
     run_test("history_normal_filters", test_history_normal_filters);
     run_test("history_normal_wire_order", test_history_normal_wire_order);
@@ -1133,6 +1213,10 @@ int main(void) {
     run_test("forward_timeout_retries", test_forward_timeout_retries);
     run_test("forward_stale_ignored", test_forward_stale_ignored);
     run_test("forward_retry_tail_order", test_forward_retry_tail_order);
+    run_test("queue_save_load_roundtrip", test_queue_save_load_roundtrip);
+    run_test("queue_load_inflight_requeued", test_queue_load_inflight_requeued);
+    run_test("queue_load_corrupt_skipped", test_queue_load_corrupt_skipped);
+    run_test("queue_persist_on_dispatch_and_confirm", test_queue_persist_on_dispatch_and_confirm);
     run_test("config_valid_full", test_config_valid_full);
     run_test("config_defaults", test_config_defaults);
     run_test("config_missing_file", test_config_missing_file);

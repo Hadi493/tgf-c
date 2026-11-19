@@ -11,6 +11,7 @@ Status: baseline · Owner: `src/config.c` (`config_load`), `src/history.c`, `src
 - `history_file` defaults to `history.txt`; a relative value is resolved
   against the CWD.
 - `seq_tracker.txt` is a hardcoded relative path (`src/tracker.c:4`, `25`).
+- `fwd_queue.txt` is a hardcoded relative path (§5, `src/forward.c`).
 - Running from a different directory is equivalent to a fresh installation:
   empty dedupe set, empty tracker, new TDLib session.
 
@@ -96,8 +97,9 @@ Example: `-1001394595107_46548385792 1794488266`.
   `fsync`, no buffering across messages.
 - Timestamp is when the message was **enqueued for forwarding**, not when it
   was delivered.
-- Rewritten wholesale by pruning (`src/history.c:119-125`), which **truncates
-  first** (`"w"`), so a crash during rewrite loses the file.
+- Rewritten by pruning via `<history_file>.tmp` + `rename`
+  (`src/history.c:104-133`), so a crash during rewrite leaves the previous
+  file intact (TD-27, addressed).
 - Load requires only a whitespace-delimited key; a missing timestamp becomes 0.
   Lines longer than 127 bytes are split by `fgets`, producing garbage entries.
 - A line with no parsable token (e.g. only spaces) is skipped at load
@@ -128,7 +130,7 @@ Example: `-1001394595107_46548385792 1794488266`.
 - `backfill_done`: 0/1.
 - Written through `seq_tracker.txt.tmp` + `rename` (`src/tracker.c:24-31`).
 - Pending buffers are **not** persisted.
-- Only loaded when sequential mode is enabled (`src/main.c:97`).
+- Only loaded when sequential mode is enabled (`src/main.c:98`).
 - Missing/corrupt file → empty tracker; a line with 3 fields is accepted with
   `scan_from=0, backfill_done=0`.
 
@@ -137,7 +139,39 @@ Example: `-1001394595107_46548385792 1794488266`.
 128 rows. Extra rows are neither loaded nor created; behavior degrades silently
 (04 §2.5).
 
-## 5. TDLib state
+## 5. Durable forward queue (`fwd_queue.txt`)
+
+The forward queue and the in-flight job are persisted so a restart resumes
+delivery (TD-03, addressed; Step 4.4a).
+
+### 5.1 Format
+
+One line per job, queued jobs in FIFO order, then the in-flight job (if any):
+
+```
+<src_chat_id> <retries> <id1> <id2> ...
+```
+
+- `retries` is the failed-attempt count (03 §7); ids are space-separated,
+  at most `MAX_FWD_IDS` (256) per line.
+- Written via `fwd_queue.txt.tmp` + `rename` after **every** queue mutation:
+  enqueue batch (`process_msgs`), dispatch, confirm, requeue, drop.
+- The in-flight job is included until confirmed; on load it becomes a queued
+  job again, so a crash between send and response can re-forward it
+  (at-least-once duplicate, 03 §7).
+
+### 5.2 Load
+
+- At startup, after `history_store_load` (`src/main.c`), always (not gated on
+  sequential mode).
+- Missing file → empty queue (normal first run).
+- A line with fewer than 3 tokens (chat, retries, ≥1 id) is skipped; ids
+  beyond 256 are truncated by `fwd_queue_push`; negative retries clamp to 0.
+- Loaded ids are already in `history.txt`, so polls do not re-enqueue them.
+- Save failure is silent (like the tracker); the queue remains in RAM and is
+  lost on restart. Load OOM skips the job (`ui_oom`).
+
+## 6. TDLib state
 
 | Path | Content | Owner |
 |---|---|---|
@@ -150,7 +184,7 @@ TGF only sets `database_directory` and `files_directory` in
 `setTdlibParameters` (`src/auth.c:21-34`). Directory creation, schema, and
 migration are TDLib’s concern. Deleting `tdlib_db/` forces a new login.
 
-## 6. Secrets and repository hygiene
+## 7. Secrets and repository hygiene
 
 - `config.json`, `config.bak`, `history.txt`, `seq_tracker.txt`, `doc/`,
   `Issues.md`, and both binaries are gitignored
@@ -164,7 +198,7 @@ migration are TDLib’s concern. Deleting `tdlib_db/` forces a new login.
 - Rotating the API hash invalidates both files and requires a TDLib re-login
   only if the app credentials are rejected.
 
-## 7. Edge cases
+## 8. Edge cases
 
 | Case | Behavior |
 |---|---|
@@ -180,9 +214,12 @@ migration are TDLib’s concern. Deleting `tdlib_db/` forces a new login.
 | `source_channels: [1, null]` | Becomes `["", ""]`; resolution errors |
 | `history_file` in a missing directory | Runs; dedupe in memory only |
 | `seq_tracker.txt` read-only | Saves fail silently; state repeats on restart |
+| `fwd_queue.txt` missing | Empty queue on startup (normal first run) |
+| `fwd_queue.txt` corrupt line | Line skipped; valid lines loaded |
+| `fwd_queue.txt` save failure | Silent; queue still in RAM, lost on restart |
 | CWD changed between runs | Different state entirely |
 
-## 8. Acceptance scenarios
+## 9. Acceptance scenarios
 
 | ID | Scenario | Expected |
 |---|---|---|
@@ -191,8 +228,9 @@ migration are TDLib’s concern. Deleting `tdlib_db/` forces a new login.
 | SC-05-03 | Add `"API_ID": …` instead of `api_id` | Accepted (case-insensitive) |
 | SC-05-04 | Use string `"true"` for sequential | Backfill does not start |
 | SC-05-05 | Delete `history.txt` between runs | Duplicates possible within the window |
-| SC-05-06 | Kill during prune rewrite | Truncated/empty `history.txt` |
+| SC-05-06 | Kill during prune rewrite | Previous `history.txt` intact (tmp+rename) |
 | SC-05-07 | Run with `history_window_hours: 0` | No prune lines; `history.txt` grows |
+| SC-05-08 | Kill with jobs queued, restart | Queue resumes from `fwd_queue.txt`; queued posts forwarded (in-flight may duplicate) |
 
 ## Amendment log
 
@@ -204,3 +242,4 @@ migration are TDLib’s concern. Deleting `tdlib_db/` forces a new login.
 | 2026-11-19 | Step 4.1 completion: empty source array is now fatal at startup (01 §1); refreshed citations; `.gitignore` gained `tests/tgf_tests` |
 | 2026-11-19 | TD-18 fixed: config.json.example is valid JSON with history_window_hours and a numeric api_id placeholder; README license/deps corrected; TD-29 load guard documented; SC-05-01/02 updated |
 | 2026-11-19 | SC-05-01 expectation corrected to observed behavior: placeholder credentials pass local config validation; TDLib proceeds to the phone prompt |
+| 2026-11-19 | Step 4.4a: new §5 durable forward queue (fwd_queue.txt); history prune rewrite is tmp+rename (TD-27); TD-03 addressed; sections renumbered 5-8 → 6-9; SC-05-06 updated, SC-05-08 added |

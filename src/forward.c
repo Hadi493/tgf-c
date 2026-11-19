@@ -19,6 +19,52 @@ void fwd_queue_push(Runtime *rt, long long src_chat_id, const long long *ids, in
     rt->fwd_queue_count++;
 }
 
+void fwd_queue_save(Runtime *rt) {
+    FILE *f = fopen("fwd_queue.txt.tmp", "w");
+    if (!f) return;
+    for (int i = 0; i < rt->fwd_queue_count; i++) {
+        int idx = (rt->fwd_queue_head + i) % rt->fwd_queue_cap;
+        ForwardJob *j = &rt->fwd_queue[idx];
+        fprintf(f, "%lld %d", j->src_chat_id, j->retries);
+        for (int k = 0; k < j->count; k++) fprintf(f, " %lld", j->ids[k]);
+        fprintf(f, "\n");
+    }
+    if (rt->fwd_inflight_active) {
+        ForwardJob *j = &rt->fwd_inflight;
+        fprintf(f, "%lld %d", j->src_chat_id, j->retries);
+        for (int k = 0; k < j->count; k++) fprintf(f, " %lld", j->ids[k]);
+        fprintf(f, "\n");
+    }
+    fclose(f);
+    rename("fwd_queue.txt.tmp", "fwd_queue.txt");
+}
+
+void fwd_queue_load(Runtime *rt) {
+    FILE *f = fopen("fwd_queue.txt", "r");
+    if (!f) return;
+    char line[8192];
+    while (fgets(line, sizeof(line), f)) {
+        char *tok = strtok(line, " \t\r\n");
+        if (!tok) continue;
+        long long chat = atoll(tok);
+        tok = strtok(NULL, " \t\r\n");
+        if (!tok) continue;
+        int retries = atoi(tok);
+        if (retries < 0) retries = 0;
+        long long ids[MAX_FWD_IDS];
+        int n = 0;
+        while ((tok = strtok(NULL, " \t\r\n")) && n < MAX_FWD_IDS) ids[n++] = atoll(tok);
+        if (n == 0) continue;
+        int before = rt->fwd_queue_count;
+        fwd_queue_push(rt, chat, ids, n);
+        if (rt->fwd_queue_count > before) {
+            int tail = (rt->fwd_queue_head + rt->fwd_queue_count - 1) % rt->fwd_queue_cap;
+            rt->fwd_queue[tail].retries = retries;
+        }
+    }
+    fclose(f);
+}
+
 static int seq_cmp_asc(const void *a, const void *b) {
     const PendingMsg *ma = (const PendingMsg *)a, *mb = (const PendingMsg *)b;
     if (ma->date != mb->date) return ma->date > mb->date ? 1 : -1;
@@ -126,12 +172,14 @@ void process_msgs(Runtime *rt, long long src_chat_id, PendingMsg *msgs, int coun
     }
     group_result_free(&r);
     if (rt->cfg.enable_sequential_forwarding) tracker_store_save(&rt->tracker);
+    fwd_queue_save(rt);
 }
 
 static void fwd_inflight_clear(Runtime *rt) {
     free(rt->fwd_inflight.ids);
     rt->fwd_inflight.ids = NULL;
     rt->fwd_inflight_active = false;
+    fwd_queue_save(rt);
 }
 
 static void fwd_requeue(Runtime *rt, int consume_budget) {
@@ -178,6 +226,7 @@ int process_fwd_queue(Runtime *rt, void *client) {
     rt->fwd_queue_head = (rt->fwd_queue_head + 1) % rt->fwd_queue_cap;
     rt->fwd_queue_count--;
     rt->fwd_last_time = now;
+    fwd_queue_save(rt);
     return 1;
 }
 
