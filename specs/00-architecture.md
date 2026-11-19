@@ -131,7 +131,7 @@ All fields live in `Runtime` (`src/tgf.h:123-151`).
 | `authorized` | TDLib reached `authorizationStateReady` | `src/auth.c:60` |
 | `dest_resolved`, `dest_chat_id` | destination chat id known | `src/resolve.c:40-47` |
 | `source_chat_ids[]`, `source_count` | resolved source ids, count of successes | `src/resolve.c:49-59` |
-| `src_name` | display name of the last source whose forward **response succeeded** | `src/forward.c:233-245` |
+| `src_name` | display name of the last source whose forward **response succeeded** | `src/forward.c:237-249` |
 | `resolve_index`, `resolve_active` | source-resolution cursor / in-flight flag | `src/resolve.c:6-30` |
 
 ### 6.3 Work and storage
@@ -208,9 +208,9 @@ TDLib getChatHistory response (newest first, ≤ MSG_LIMIT)
 
 1. The process writes to Telegram only through `transport_send` (`src/transport.c:6`).
 2. A message is added to the dedupe set **before** its forward request is sent;
-   delivery success is not required (`src/forward.c:170`).
+   delivery success is not required (`src/forward.c:174`).
 3. `forwardMessages` jobs are dispatched at most once per loop tick
-   (`src/forward.c:200-231`).
+   (`src/forward.c:204-235`).
 4. `source_count` counts successful resolutions only; failed sources are never
    polled.
 5. Polling starts only when `authorized && dest_resolved && source_count >= 1
@@ -221,7 +221,7 @@ TDLib getChatHistory response (newest first, ≤ MSG_LIMIT)
 8. The dedupe key is `<chat_id>_<message_id>` (`src/history.c:62`, `87`).
 9. Messages are forwarded from the source chat id to the configured
    destination chat id in one `forwardMessages` call per job
-   (`src/forward.c:220`).
+   (`src/forward.c:224`).
 10. Forward delivery is at-least-once: bounded retry (3 attempts),
     flood-wait pause, and a 60 s in-flight timeout (03 §7). No other retry
     or backoff exists.

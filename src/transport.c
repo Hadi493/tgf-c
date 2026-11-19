@@ -20,7 +20,7 @@ void transport_send(Runtime *rt, void *client, const char *type, const char *pay
         else
             n = snprintf(buf, sizeof(buf), "{\"@type\":\"%s\"}", type);
     }
-    if (n >= (int)sizeof(buf)) ui_status("WARNING: request truncated");
+    if (n >= (int)sizeof(buf)) { ui_status("WARNING: request truncated"); return; }
     td_json_client_send(client, buf);
 }
 

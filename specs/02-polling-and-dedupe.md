@@ -36,12 +36,14 @@ For each `i` in `0..num_sources-1` with `source_chat_ids[i] != 0`:
 - All sources are requested in the same tick (a burst of up to N requests).
 - Responses are newest-first and capped at 10,000 messages. In non-sequential
   mode there is no pagination: if more than 10,000 messages appeared since the
-  previous poll, the excess is never seen (TD-09).
+  previous poll, the excess is never seen; a full page publishes
+  `WARNING: history page full (10000); older messages may be missed`
+  (TD-09 partial; pagination is Step 5).
 
 ## 2. Response handling
 
 `history_<chat_id>` responses go to `history_response`
-(`src/poll.c:24-150`), which parses `"messages"` (array). Missing or non-array →
+(`src/poll.c:24-154`), which parses `"messages"` (array). Missing or non-array →
 silently ignored. `total == 0` is handled only by the sequential backfill
 completion path (04 §3.5); in normal mode it is a no-op.
 
@@ -63,7 +65,7 @@ cutoff = history_window_hours > 0
 ```
 
 (`src/poll.c:44-45`). A message is dropped when `cutoff != 0 && msg_date < cutoff`
-(`src/poll.c:78`, `134`). The comparison uses the **message’s `date` field**, not
+(`src/poll.c:80`, `138`). The comparison uses the **message’s `date` field**, not
 the time the program saw it. `0` or negative disables the cutoff.
 
 The same window value also controls dedupe-entry validity (§3.3), where the
@@ -72,10 +74,10 @@ clock is **enqueue time**. The two clocks are independent by design.
 ### 2.2 Normal-path algorithm
 
 When sequential mode is off, or backfill is already complete
-(`src/poll.c:54-120` is skipped, `122-149` runs):
+(`src/poll.c:55-123` is skipped, `122-149` runs):
 
 1. `calloc(total, sizeof(PendingMsg))`; failure → status `OOM in history
-   handler`, return (`src/poll.c:122-123`).
+   handler`, return (`src/poll.c:126-127`).
 2. Iterate the response array in wire order (newest first). For each element:
    - read `id`, `media_album_id`, `chat_id`, `date`;
    - skip if `id == 0`;
@@ -84,7 +86,7 @@ When sequential mode is off, or backfill is already complete
    - copy `id`, `album_id`, `date`, and `reply_to.message_id` into the buffer;
    - increment `new_count`.
 3. If sequential mode is on, publish `New: <n> msgs, cutoff=<cutoff>` as a
-   status message (`src/poll.c:143-144`).
+   status message (`src/poll.c:147-148`).
 4. If `new_count == 0`, free and return.
 5. `process_msgs(src_chat_id, new_msgs, new_count)` (03), then free.
 
@@ -94,8 +96,8 @@ Notes:
 - Messages in one response are not deduplicated against each other; TDLib
   returns unique ids.
 - `history_has` uses the **message’s own `chat_id` field**
-  (`src/poll.c:130`, `133`), while `process_msgs` records with `src_chat_id`
-  (`src/forward.c:170`). For channel posts these are identical. For any response
+  (`src/poll.c:134`, `133`), while `process_msgs` records with `src_chat_id`
+  (`src/forward.c:174`). For channel posts these are identical. For any response
   where they differ, dedupe and recording use different keys (TD-11).
 - Memory: one temporary array of up to 10,000 `PendingMsg` (32 B each) per
   response.
@@ -152,7 +154,7 @@ An expired entry is **not removed by lookup**; it stays until pruning.
 - Else: insert, set timestamp `now`, increment `count`, append
   `"<key> <now>\n"` to `history_file`.
 - Called from `process_msgs` **before** the job can be dispatched
-  (`src/forward.c:169-171`). Marking therefore means "enqueued", not
+  (`src/forward.c:173-175`). Marking therefore means "enqueued", not
   "delivered"; delivery is pursued by the retry/flood-wait policy in 03 §7
   (TD-01, Step 4.3). Marking is never removed on failure.
 - On OOM (`strdup` failure) the entry is silently not recorded; the file is not
@@ -240,3 +242,4 @@ Changing `history_window_hours` between runs changes both behaviors at once:
 | 2026-11-19 | Step 4.2: prune rehashes survivors (TD-04 fixed — fewer duplicates); load skips lines with no parsable token (TD-29 fixed); refreshed store field names; SC-02-05 extended |
 | 2026-11-19 | Step 4.3 cross-reference: marking stays at enqueue; delivery pursued by 03 §7 retry policy |
 | 2026-11-19 | Step 4.4a: prune rewrite is tmp+rename (TD-27 addressed) |
+| 2026-11-19 | Step 4.5: full history page publishes a warning (TD-09 partial) |

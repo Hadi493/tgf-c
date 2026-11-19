@@ -105,7 +105,7 @@ Observations:
   `num_sources`.
 - `FORWARDED from` is the **last source whose forward response succeeded**
   (`src_name`, default `"unknown"`), not a live per-message log
-  (`src/forward.c:233-245`). `update_action_msg` (`src/ui.c:73-77`) is called immediately
+  (`src/forward.c:237-249`). `update_action_msg` (`src/ui.c:73-77`) is called immediately
   after each full redraw (`src/ui.c:83-86`), so it is currently redundant: the
   line changes only on the next 1 Hz refresh, not between refreshes.
 - The status row disappears one refresh after it is printed.

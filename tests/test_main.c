@@ -731,6 +731,34 @@ static void test_backfill_resume_after_crash(void) {
     CHECK_LL(rt.fwd_queue_count, 2);
 }
 
+static void test_album_split_over_cap(void) {
+    int n = 300;
+    PendingMsg *msgs = calloc(n, sizeof(PendingMsg));
+    for (int i = 0; i < n; i++) msgs[i] = make_msg(i + 1, 777, 0, 100);
+    process_msgs(&rt, -100123, msgs, n);
+    free(msgs);
+    CHECK_LL(rt.fwd_queue_count, 2);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].count, 256);
+    int t = (rt.fwd_queue_head + 1) % rt.fwd_queue_cap;
+    CHECK_LL(rt.fwd_queue[t].count, 44);
+    CHECK_LL(rt.history.count, 300);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].ids[0], 1);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].ids[255], 256);
+    CHECK_LL(rt.fwd_queue[t].ids[0], 257);
+}
+
+static void test_tracker_full_warning(void) {
+    rt.cfg.enable_sequential_forwarding = 1;
+    for (int i = 0; i < 128; i++) tracker_store_set_scan_from(&rt.tracker, -1000 - i, 0);
+    CHECK_LL(rt.tracker.count, 128);
+    cJSON *arr = cJSON_CreateArray();
+    cJSON_AddItemToArray(arr, msg_obj(5, time(NULL), 0, 0, -9999));
+    cJSON *root = root_with(arr);
+    history_response(&rt, NULL, root, -9999);
+    cJSON_Delete(root);
+    CHECK_STR_CONTAINS(rt.status_msg, "tracker full");
+}
+
 static void test_dispatch_single(void) {
     long long ids[1] = { 42 };
     fwd_queue_push(&rt, -100123, ids, 1);
@@ -1278,6 +1306,8 @@ int main(void) {
     run_test("pending_compact_on_flush", test_pending_compact_on_flush);
     run_test("pending_load_corrupt_skipped", test_pending_load_corrupt_skipped);
     run_test("backfill_resume_after_crash", test_backfill_resume_after_crash);
+    run_test("album_split_over_cap", test_album_split_over_cap);
+    run_test("tracker_full_warning", test_tracker_full_warning);
     run_test("dispatch_single", test_dispatch_single);
     run_test("dispatch_batch", test_dispatch_batch);
     run_test("dispatch_delay_gate", test_dispatch_delay_gate);

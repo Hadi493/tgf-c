@@ -65,19 +65,20 @@ the end of `process_msgs` when sequential mode is on.
 
 128 entries (`src/tgf.h:16`). At capacity, new chats are not tracked:
 `pending_append` drops every message and `set_scan_from` is a no-op, so the
-same page is requested on every poll with no progress and no error beyond the
-absence of state (TD-09).
+same page is requested on every poll with no progress. The history handler
+publishes `WARNING: tracker full (128); chat not tracked` when it cannot create
+an entry (TD-09 partial).
 
 ### 2.6 Entry creation
 
 The history handler creates a tracker row the first time it sees a chat with
-`scan_from == 0` during backfill (`src/poll.c:59-69`), provided the capacity
+`scan_from == 0` during backfill (`src/poll.c:60-71`), provided the capacity
 allows it.
 
 ## 3. Backfill algorithm
 
 Runs when sequential mode is on and `backfill_done == 0` for the chat
-(`src/poll.c:54-120`).
+(`src/poll.c:55-123`).
 
 ### 3.1 Polling position
 
@@ -128,7 +129,7 @@ before condition A fires.
 ### 3.5 Completion actions
 
 On completion, with `has_pending` meaning this chat’s `pending_count > 0`
-(`src/poll.c:93-110`):
+(`src/poll.c:96-113`):
 
 | `has_pending` | `cutoff_filtered` | Actions |
 |---|---|---|
@@ -227,3 +228,4 @@ the batch.
 | 2026-11-17 | Step 2: moved tracker/poll into `src/`; refreshed citations and `tracker_store_*` names |
 | 2026-11-19 | Refreshed citations after Step 3/4.1 changes in `src/poll.c` and `src/tracker.c`; backfill behavior unchanged |
 | 2026-11-19 | Step 4.4b: pending buffer journaled to seq_pending.txt (05 §4.3), replayed on restart, compacted on flush; TD-02 addressed; mid-backfill loss and re-scan duplicate cases closed; SC-04-04 updated |
+| 2026-11-19 | Step 4.5: tracker-full warning when an entry cannot be created (TD-09 partial) |

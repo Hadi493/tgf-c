@@ -48,6 +48,7 @@ void history_response(Runtime *rt, void *client, cJSON *root, long long src_chat
     int i = 0;
     int new_count = 0;
     int cutoff_filtered = 0;
+    int tracker_full = 0;
 
     int bd = rt->cfg.enable_sequential_forwarding && tracker_store_is_backfill_done(&rt->tracker, src_chat_id);
 
@@ -67,6 +68,7 @@ void history_response(Runtime *rt, void *client, cJSON *root, long long src_chat
                 rt->tracker.entries[rt->tracker.count].pending_cap = 0;
                 rt->tracker.count++;
             }
+            if (!found && rt->tracker.count >= MAX_SEQ_TRACKER) tracker_full = 1;
         }
         for (const cJSON *m = msgs->child; m && i < total; m = m->next, i++) {
             long long msg_id = cJSON_GetInt64(m, "id");
@@ -85,6 +87,7 @@ void history_response(Runtime *rt, void *client, cJSON *root, long long src_chat
         }
 
         { char st[64]; snprintf(st, sizeof(st), "Backfill: %d msgs, cutoff=%lld", new_count, cutoff); ui_status(st); }
+        if (tracker_full) ui_status("WARNING: tracker full (128); chat not tracked");
 
         int complete = 0;
         if (cutoff && cutoff_filtered > 0 && new_count == 0) complete = 1;
@@ -119,6 +122,7 @@ void history_response(Runtime *rt, void *client, cJSON *root, long long src_chat
         return;
     }
 
+    if (total >= MSG_LIMIT) ui_status("WARNING: history page full (10000); older messages may be missed");
     PendingMsg *new_msgs = calloc(total, sizeof(PendingMsg));
     if (!new_msgs) { ui_oom("OOM in history handler"); return; }
     new_count = 0;

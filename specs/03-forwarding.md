@@ -4,12 +4,12 @@ Status: baseline · Owner: `src/forward.c`, `src/main.c` (`process_fwd_queue` ca
 
 ## 1. Input contract
 
-`process_msgs(src_chat_id, msgs, count)` (`src/forward.c:162`) receives messages that
+`process_msgs(src_chat_id, msgs, count)` (`src/forward.c:166`) receives messages that
 already passed id-zero, dedupe, and cutoff filters. It performs no additional
 filtering. It is called from two places:
 
 - normal polling: a temporary array in wire order, newest first
-  (`src/poll.c:148`);
+  (`src/poll.c:152`);
 - sequential backfill flush: the tracker’s pending buffer (04 §3.6).
 
 ## 2. Ordering
@@ -29,7 +29,7 @@ Intra-job ordering is **always ascending by message id**, regardless of
 `sequence_direction`:
 
 - reply chain ids are bubble-sorted ascending (`src/forward.c:106-108`);
-- album ids are sorted ascending by message id (`src/forward.c:130-134`).
+- album ids are sorted ascending by message id (`src/forward.c:132-137`).
 
 `desc` therefore orders batches, not the messages inside a batch.
 
@@ -62,17 +62,20 @@ Consequences (all current behavior, not bugs to fix in a structural refactor):
 - Depth is exactly one. A parent that itself replies to something does not pull
   in the grandparent.
 - Children beyond the 255th are marked forwarded but omitted from the job, i.e.
-  silently dropped (TD-09).
+  silently dropped (TD-09 residual; rare — requires 256+ direct replies in one
+  batch).
 - `reply_to` is read from the message’s `reply_to.message_id` field
-  (`src/poll.c:81-82`, `138-139`); absent → 0.
+  (`src/poll.c:83-84`, `142-143`); absent → 0.
 
 ## 4. Albums
 
-For an album message (`media_album_id != 0`, `src/forward.c:124-144`):
+For an album message (`media_album_id != 0`, `src/forward.c:124-149`):
 
-1. Collect **all ungrouped** messages in the batch with the same
-   `media_album_id` into `album_indices[256]`. There is no bounds check; the
-   Telegram album limit (10) is the only guard.
+1. Collect ungrouped messages in the batch with the same `media_album_id`
+   into `album_indices[256]`, **at most 256 per job**. If more members remain,
+   repeat: each pass sorts its ≤256 ids ascending, pushes one job, and marks
+   them grouped, until none remain. A large album is split into multiple
+   ascending jobs (no stack overflow, no loss; TD-09 addressed).
 2. Sort those indices ascending by message id.
 3. Push one job containing exactly those ids.
 4. For each: `history_add`, optional `seq_tracker_set`, mark grouped.
@@ -116,7 +119,7 @@ resolved only by the response or the 60 s timeout (§6, §7).
 
 ### 5.2 Dispatch
 
-`process_fwd_queue` (`src/forward.c:200-231`) runs once per main-loop tick and:
+`process_fwd_queue` (`src/forward.c:204-235`) runs once per main-loop tick and:
 
 1. If a job is in flight: when `now - fwd_inflight_time > FWD_TIMEOUT_SEC`
    (60 s), publish `Forward timed out` and take the retryable-failure path
@@ -158,8 +161,9 @@ and therefore one delay unit.
 
 `transport_send` formats the request into an 8 KiB buffer (`src/transport.c:6-25`). If the
 formatted request would exceed it, it calls `ui_status("WARNING: request
-truncated")` and **still sends the truncated JSON**. Current maximum id string
-size (~256 × 20 chars) fits, but there is no rejection path.
+truncated")` and **does not send** (TD-09 addressed). The in-flight job then
+hits the 60 s timeout and takes the retry path (§7). Current maximum id string
+size (~256 × 20 chars) fits, so this guard is not reached in practice.
 
 ## 6. Response handling
 
@@ -171,9 +175,9 @@ ERROR [fwd_<...>] code=<n>: <message>
 ```
 
 via `ui_status`, then calls `forward_error_handle(rt, id, code, message)`
-(`src/forward.c:247-265`) for `REQ_FORWARD_ONE`/`REQ_FORWARD_BATCH`.
+(`src/forward.c:251-269`) for `REQ_FORWARD_ONE`/`REQ_FORWARD_BATCH`.
 
-Success (`forward_handle`, `src/forward.c:233-245`):
+Success (`forward_handle`, `src/forward.c:237-249`):
 
 - the source chat id arrives in the typed `RequestId` decoded from the extra
   (`src/main.c:28-32`); single-id tags use `fwd_<chat>_<id>`, batch tags
@@ -234,11 +238,11 @@ success. Un-marking the dedupe entry on failure is deliberately **not** done
 
 | Limit | Value | Effect when exceeded |
 |---|---|---|
-| Ids per job | 256 (`MAX_FWD_IDS`) | extra reply children marked but not forwarded; album array may overflow |
+| Ids per job | 256 (`MAX_FWD_IDS`) | albums split into ≤256-id jobs (no overflow); excess reply children marked but not forwarded (residual) |
 | Reply chain depth | 1 | grandparents omitted |
 | Request buffer | 8 KiB (`src/transport.c:10`) | truncated JSON still sent |
-| Id string buffer | 8 KiB (`src/forward.c:212`) | truncated id list |
-| Payload buffer | 16 KiB (`src/forward.c:217`) | truncated JSON |
+| Id string buffer | 8 KiB (`src/forward.c:216`) | truncated id list |
+| Payload buffer | 16 KiB (`src/forward.c:221`) | truncated JSON |
 | Queue capacity | unbounded growth | ring buffer doubles from 1024; ~48 B + 8 B/id per job |
 | Retry budget | 3 attempts (`MAX_FWD_ATTEMPTS`) | job dropped with a status line |
 | In-flight timeout | 60 s (`FWD_TIMEOUT_SEC`) | retryable-failure path |
@@ -275,6 +279,7 @@ success. Un-marking the dedupe entry on failure is deliberately **not** done
 | SC-03-06 | Revoke bot/user permission to post in destination | `ERROR [fwd_...] code=403` + `Forward dropped (permanent error 403)`; no retry |
 | SC-03-07 | Kill the process with several jobs queued | Queue resumes on restart; queued posts are forwarded (in-flight job may duplicate) |
 | SC-03-08 | Album arrives across two polls (slow source) | Two partial albums in destination |
+| SC-03-11 | Album with >256 members in one batch | Split into multiple ascending ≤256-id jobs; all members forwarded |
 | SC-03-09 | Trigger a flood wait (rapid forwards) | `Flood wait: pausing Ns`; dispatch resumes after the pause; no messages lost |
 | SC-03-10 | Transient forward error that later succeeds | job retried; message delivered; `FORWARDED` line on success |
 
@@ -288,3 +293,4 @@ success. Un-marking the dedupe entry on failure is deliberately **not** done
 | 2026-11-19 | As-built refresh for Step 3: ring-buffer queue with heap id payloads (TD-25), head-index pop, RequestId-based response handling, dead error branch removed (TD-24); observable pacing/grouping unchanged; refreshed citations |
 | 2026-11-19 | Step 4.3: at-least-once delivery — in-flight slot, bounded retry (3 attempts), flood-wait pause, permanent-drop and timeout statuses, stale-response guard; marking stays at enqueue (un-mark option rejected); TD-01 partially addressed, TD-06 addressed; restart loss remains TD-03 (Step 4.4) |
 | 2026-11-19 | Step 4.4a: queue + in-flight persisted to fwd_queue.txt (05 §5), resume on restart; TD-03 addressed; SC-03-07 updated |
+| 2026-11-19 | Step 4.5: album grouping splits >256-member albums (overflow fixed, no loss); transport_send drops truncated requests instead of sending; reply-child excess remains a documented residual; SC-03-11 added |

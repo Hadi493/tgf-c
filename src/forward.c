@@ -123,23 +123,27 @@ GroupResult group_batch(const PendingMsg *msgs, int count, int order) {
             }
         } else {
             long long album_id = sorted[i].album_id;
-            int album_indices[MAX_FWD_IDS];
-            int album_count = 0;
-            for (int j = 0; j < count; j++)
-                if (!grouped[j] && sorted[j].album_id == album_id) album_indices[album_count++] = j;
-            for (int a = 0; a < album_count; a++)
-                for (int b = a + 1; b < album_count; b++)
-                    if (sorted[album_indices[a]].id > sorted[album_indices[b]].id) {
-                        int tmp = album_indices[a]; album_indices[a] = album_indices[b]; album_indices[b] = tmp;
-                    }
-            GroupJob *j = &jobs[r.job_count++];
-            j->count = album_count;
-            for (int b = 0; b < album_count; b++) j->ids[b] = sorted[album_indices[b]].id;
-            for (int b = 0; b < album_count; b++) {
-                marks[r.mark_count].id = sorted[album_indices[b]].id;
-                marks[r.mark_count].date = sorted[album_indices[b]].date;
-                r.mark_count++;
-                grouped[album_indices[b]] = 1;
+            for (;;) {
+                int album_indices[MAX_FWD_IDS];
+                int album_count = 0;
+                for (int j = 0; j < count && album_count < MAX_FWD_IDS; j++)
+                    if (!grouped[j] && sorted[j].album_id == album_id) album_indices[album_count++] = j;
+                if (album_count == 0) break;
+                for (int a = 0; a < album_count; a++)
+                    for (int b = a + 1; b < album_count; b++)
+                        if (sorted[album_indices[a]].id > sorted[album_indices[b]].id) {
+                            int tmp = album_indices[a]; album_indices[a] = album_indices[b]; album_indices[b] = tmp;
+                        }
+                GroupJob *j = &jobs[r.job_count++];
+                j->count = album_count;
+                for (int b = 0; b < album_count; b++) j->ids[b] = sorted[album_indices[b]].id;
+                for (int b = 0; b < album_count; b++) {
+                    marks[r.mark_count].id = sorted[album_indices[b]].id;
+                    marks[r.mark_count].date = sorted[album_indices[b]].date;
+                    r.mark_count++;
+                    grouped[album_indices[b]] = 1;
+                }
+                if (album_count < MAX_FWD_IDS) break;
             }
         }
     }

@@ -102,15 +102,19 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
   process idle with no retry or guidance.
 - **Fix gate:** re-prompt/abort policy; amend 01 §2.
 
-#### TD-09 — Fixed caps and silent truncation
+#### TD-09 — Fixed caps and silent truncation — **PARTIALLY ADDRESSED (Step 4.5)**
 - **Evidence:** `MAX_SEQ_TRACKER 128` (`src/tgf.h:16`), `MAX_FWD_IDS 256`
-  (`src/tgf.h:33`), reply/album arrays 256 (`src/forward.c:99`, `126`, `129`), 8 KiB
-  request buffer (`src/transport.c:10`), 10k page with no pagination in live mode
-  (`src/tgf.h:13`, `src/poll.c:13-14`), `num_sources` unbounded.
-- **Impact:** 129th source never works; >255 children are marked but not
-  forwarded; >10k messages between polls are missed; truncated JSON is sent.
-- **Fix gate:** explicit limits with errors, or dynamic structures; amend 02
-  §1.2, 03 §8, 04 §2.5.
+  (`src/tgf.h:33`), reply/album arrays 256 (`src/forward.c`), 8 KiB request
+  buffer (`src/transport.c:10`), 10k page with no pagination in live mode
+  (`src/tgf.h:14`, `src/poll.c:13-14`), `num_sources` unbounded.
+- **Resolution:** album grouping splits >256-member albums into multiple
+  ascending jobs (stack overflow fixed, no loss); `transport_send` no longer
+  sends truncated JSON (warns and returns); tracker-full and history-page-full
+  warnings added (04 §2.5, 02 §1.2).
+- **Residual:** >255 reply children still marked-not-forwarded (rare); live
+  mode has no pagination (>10k between polls missed, warned); the 128-chat
+  tracker cap and 256-id job cap remain hard limits. Pagination/dynamic
+  structures are Step 5.
 
 #### TD-10 — Global mutable state and a god header
 - **Evidence:** 30 `extern` declarations in `tgf.h` before Step 1b
@@ -139,8 +143,8 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
   malformed-line skip), tracker round-trip
   and capacity, dispatch tagging/pacing, the config table from 05 §2, and
   resolution cursor/summary/handler behavior, history-handler filtering, and
-  backfill completion heuristics A/B + reset-without-done (72 tests,
-  289 checks). Missing: UI and main-loop dispatch
+  backfill completion heuristics A/B + reset-without-done (74 tests,
+  298 checks). Missing: UI and main-loop dispatch
   (`request_id_from_extra` is static in `src/main.c`; a
   `resolve_dest` misrouting regression there was caught only by live
   verification). The test and sanitize targets are POSIX-only.
@@ -189,15 +193,15 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 ### P2
 
 #### TD-11 — Dedupe key mismatch between read and write
-- **Evidence:** read uses the message’s `chat_id` (`src/poll.c:133`), write uses
-  `src_chat_id` (`src/forward.c:170`).
+- **Evidence:** read uses the message’s `chat_id` (`src/poll.c:137`), write uses
+  `src_chat_id` (`src/forward.c:174`).
 - **Impact:** none for channel posts; incorrect dedupe if TDLib ever returns a
   differing chat id.
 - **Fix gate:** normalize on `src_chat_id`; amend 02 §2.2.
 
 #### TD-13 — Unreconciled boundaries
-- **Evidence:** album grouping is per batch (`src/forward.c:124-144`); cutoff uses
-  message date (`src/poll.c:134`) while dedupe expiry uses enqueue time
+- **Evidence:** album grouping is per batch (`src/forward.c:124-149`); cutoff uses
+  message date (`src/poll.c:138`) while dedupe expiry uses enqueue time
   (`src/history.c:69`).
 - **Impact:** split albums; a message can be inside the window yet have an
   expired dedupe entry.
@@ -205,8 +209,8 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 
 #### TD-14 — Conflated feature flag and permissive CLI
 - **Evidence:** `enable_sequential_forwarding` controls backfill and sorting
-  (`src/poll.c:54`, `src/forward.c:94-95`); any argv disables the dashboard, only `-d`
-  enables debug (`src/resolve.c:54-56`, `src/forward.c:242`, `src/main.c:131-145`).
+  (`src/poll.c:55`, `src/forward.c:94-95`); any argv disables the dashboard, only `-d`
+  enables debug (`src/resolve.c:54-56`, `src/forward.c:246`, `src/main.c:131-145`).
 - **Impact:** cannot request ordering without backfill; typos silently change
   UI mode.
 - **Fix gate:** split flags and add argument validation; amend 04 §1, 06 §1.
@@ -312,7 +316,7 @@ the step is too large.
 - Done (2026-11-19): backfill completion heuristics (04 §3.4–3.5) and the
   history handler are locked in by the characterization suite (`src/poll.c`
   is linked into `tests/tgf_tests`).
-- `specs/acceptance.md` added: 58-scenario manual checklist for TDLib, UI,
+- `specs/acceptance.md` added: 59-scenario manual checklist for TDLib, UI,
   file, and restart behavior that unit tests cannot cover.
 - Changing any existing assertion is a behavior change: amend the owning spec
   in the same change.
@@ -356,7 +360,7 @@ Update `nob.c` source list; keep the same binary name and CLI.
 
 **Done:** all ten modules plus `src/tgf.h` exist; `nob.c` compiles them with
 `-I.`/`-Isrc`; `tests/test_main.c` stubs `transport_send`/`transport_destroy`/
-`ui_status`/`ui_oom`/`ui_forwarded`. No behavior change; 289 checks pass.
+`ui_status`/`ui_oom`/`ui_forwarded`. No behavior change; 298 checks pass.
 
 ### Step 3 — Structural cleanups (behavior-preserving) — **mostly done**
 - Done: dead code removed (TD-24, partial — see register).
@@ -380,7 +384,8 @@ Order chosen by user risk:
    durability completes the guarantee in Step 4.4.
 4. **Done (Step 4.4a/b):** durable queue + crash-safe history rewrite +
    durable pending journal (TD-03, TD-27, TD-02).
-5. **Cap/truncation policy** (TD-09).
+5. **Partially done (Step 4.5):** album split + truncation guard + cap
+   warnings (TD-09). Reply-child excess and live pagination remain (Step 5).
 6. **Flag/CLI split** (TD-14) and **dashboard states** (TD-23).
 
 ### Step 5 — Feature work
@@ -429,3 +434,4 @@ structural refactor would violate Phase 2:
 | 2026-11-19 | Step 4.3 done: at-least-once delivery (03 §5-§10, 02 §3.4, 00 §8/§9, 01 §6 amended first); TD-01 partial, TD-06 addressed; restart loss remains TD-03 |
 | 2026-11-19 | Step 4.4a done: durable forward queue (05 §5) + crash-safe history prune (TD-03, TD-27 addressed); 05 sections renumbered; TD-02 remains (4.4b) |
 | 2026-11-19 | Step 4.4b done: durable pending journal seq_pending.txt (05 §4.3, 04 amended); TD-02 addressed; Step 4.4 complete |
+| 2026-11-19 | Step 4.5 done (partial): album split fixes stack overflow, truncation guard, tracker/page-full warnings (TD-09 partial); reply excess + pagination remain |
