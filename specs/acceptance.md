@@ -91,6 +91,7 @@ cover (TDLib, UI, files, multi-process restart). The automated suite
 | SC-04-06 | Restart after completed backfill: only new posts | |
 | SC-04-07 | 129 sources: 129th never tracks or forwards | |
 | SC-04-08 | Empty channel: row written with `backfill_done = 1` | |
+| SC-04-09 | `enable_ordering` without sequential: live batches sorted, no backfill | |
 
 ### Config and storage (spec 05)
 
@@ -112,7 +113,7 @@ cover (TDLib, UI, files, multi-process restart). The automated suite
 |---|---|---|
 | SC-06-01 | `./tgf` with cached session: dashboard fields match config | |
 | SC-06-02 | `./tgf -d`: no dashboard, debug stdout + status stderr | |
-| SC-06-03 | `./tgf foo`: no dashboard, no debug | |
+| SC-06-03 | `./tgf foo`: usage to stderr, exit 1 | |
 | SC-06-04 | Forward in dashboard: `FORWARDED` source updates within ~1 s | |
 | SC-06-05 | Misconfigured destination: `ERROR: Failed to resolve destination ...`, exit 1 | |
 | SC-06-06 | SIGINT: terminal restored, exit 0 | |

@@ -78,7 +78,10 @@ static int load_config(Runtime *r, const char *path) {
 }
 
 int main(int argc, char *argv[]) {
-    (void)argc;
+    if (argc > 2 || (argc == 2 && strcmp(argv[1], "-d") != 0)) {
+        fprintf(stderr, "Usage: %s [-d]\n", argv[0]);
+        return 1;
+    }
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
     ui_init(&rt, argv[1] == NULL, argv[1] != NULL && strcmp(argv[1], "-d") == 0);

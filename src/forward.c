@@ -165,7 +165,7 @@ void group_result_free(GroupResult *r) {
 
 void process_msgs(Runtime *rt, long long src_chat_id, PendingMsg *msgs, int count) {
     if (count == 0) return;
-    int order = rt->cfg.enable_sequential_forwarding ? (rt->cfg.sequence_direction == 0 ? 0 : 1) : -1;
+    int order = (rt->cfg.enable_sequential_forwarding || rt->cfg.enable_ordering) ? (rt->cfg.sequence_direction == 0 ? 0 : 1) : -1;
     GroupResult r = group_batch(msgs, count, order);
     if (!r.jobs) { ui_oom("OOM in process_msgs"); return; }
     for (int i = 0; i < r.job_count; i++)

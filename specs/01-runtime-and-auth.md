@@ -4,28 +4,28 @@ Status: baseline · Owner: `src/main.c`, `src/auth.c`, `src/resolve.c` · Depend
 
 ## 1. Startup sequence
 
-Exact order in `main` (`src/main.c:80-105`):
+Exact order in `main` (`src/main.c:80-108`):
 
-1. `setvbuf(stdout/stderr, _IONBF)` — unbuffered output (`src/main.c:82-83`).
+1. `setvbuf(stdout/stderr, _IONBF)` — unbuffered output (`src/main.c:85-86`).
 2. `ui_init` selects the stderr or ncurses sink from `argv[1]`
-   (`src/main.c:84`, 06 §1).
+   (`src/main.c:87`, 06 §1).
 3. `load_config("config.json")`; any failure prints to stderr and exits **1**
-   (`src/main.c:86`). The path is hardcoded and CWD-relative.
+   (`src/main.c:89`). The path is hardcoded and CWD-relative.
 4. `num_sources == 0` → `ERROR: No source channels configured` on stderr,
-   exit **1** (`src/main.c:87`). No TDLib client is created.
-5. `td_json_client_create()`; NULL → stderr + exit **1** (`src/main.c:89-90`).
-6. `setLogVerbosityLevel 0` — TDLib logging silenced (`src/main.c:91`). TDLib's
+   exit **1** (`src/main.c:90`). No TDLib client is created.
+5. `td_json_client_create()`; NULL → stderr + exit **1** (`src/main.c:92-93`).
+6. `setLogVerbosityLevel 0` — TDLib logging silenced (`src/main.c:94`). TDLib's
    own creation-time log lines may reach stderr before this takes effect.
 7. `calloc(num_sources, sizeof(long long))` for `source_chat_ids`; failure
-   destroys the client and exits **1** (`src/main.c:93-94`).
+   destroys the client and exits **1** (`src/main.c:96-97`).
 8. `history_store_load()`; `fwd_queue_load()` resumes persisted forward jobs
    (05 §5); in sequential mode `tracker_store_load()` then `seq_pending_load()`
-   replays the pending journal (05 §4.3) (`src/main.c:96-99`).
+   replays the pending journal (05 §4.3) (`src/main.c:99-102`).
 9. `signal(SIGINT)`, `signal(SIGTERM)` → set `keep_running = false`
-   (`src/main.c:99-100`, `src/main.c:15-18`).
-10. `getAuthorizationState` (`src/main.c:101`).
-11. Enter the loop; `last_poll = 0`, `last_prune = 0` (`src/main.c:103-105`,
-    `src/main.c:147-148`).
+   (`src/main.c:102-103`, `src/main.c:15-18`).
+10. `getAuthorizationState` (`src/main.c:104`).
+11. Enter the loop; `last_poll = 0`, `last_prune = 0` (`src/main.c:106-108`,
+    `src/main.c:150-151`).
 
 No CLI flags affect startup beyond `-d` (06). No config path override exists.
 
@@ -39,7 +39,7 @@ JSON (`strstr`), not by reading the state object’s `@type` (`src/auth.c:19-71`
 `authorizationState` update with no recognized state causes no action.
 
 The main loop routes `updateAuthorizationState` directly to `auth_handle`
-(`src/main.c:113-114`); there is no separate update path.
+(`src/main.c:116-117`); there is no separate update path.
 
 ### 2.2 States handled
 
@@ -146,7 +146,7 @@ configured names, space-separated, failed entries only).
 
 ## 5. Main loop
 
-Pseudo-code (`src/main.c:105-149`):
+Pseudo-code (`src/main.c:108-152`):
 
 ```
 while (keep_running):
@@ -189,7 +189,7 @@ Consequences:
 ## 6. Shutdown
 
 SIGINT/SIGTERM only clear `keep_running` (`src/main.c:15-18`). The loop exits after the
-current `receive` returns (≤1 s) and cleanup runs (`src/main.c:151-167`):
+current `receive` returns (≤1 s) and cleanup runs (`src/main.c:154-170`):
 
 - free every non-NULL `history_set` entry, the table, and `history_time`;
 - free each queued job's heap `ids`, then the `fwd_queue` ring array;

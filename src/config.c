@@ -55,6 +55,9 @@ int config_load(const char *path, Config *out) {
     v = cJSON_GetObjectItem(root, "enable_sequential_forwarding");
     out->enable_sequential_forwarding = v && cJSON_IsBool(v) ? v->valueint : 0;
 
+    v = cJSON_GetObjectItem(root, "enable_ordering");
+    out->enable_ordering = v && cJSON_IsBool(v) ? v->valueint : 0;
+
     v = cJSON_GetObjectItem(root, "sequence_direction");
     if (v && cJSON_IsString(v) && strcmp(v->valuestring, "desc") == 0)
         out->sequence_direction = 1;

@@ -60,7 +60,7 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
   leaves holes until the next successful prune (reported via `ui_oom`).
 
 #### TD-05 — Failed resolution is invisible and permanent — **ADDRESSED in Step 4.1**
-- **Evidence:** `src/main.c:23-74` (no retry), `src/main.c:124` (gate just stays
+- **Evidence:** `src/main.c:23-74` (no retry), `src/main.c:127` (gate just stays
   false), `src/ui.c:59` (literal `ACTIVE`).
 - **Impact:** a typo in `dest_channel` yields one ≤1 s status line and a
   process that looks healthy forever. Same for an all-failed source set.
@@ -130,7 +130,7 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 
 #### TD-12 — Errors are strings; reporting policy is ad hoc
 - **Evidence:** every failure is `ui_status("…")`; exits mix `fprintf` and
-  silent returns (`src/config.c:9-77`, `src/main.c:151-167`); one-slot `status_msg`
+  silent returns (`src/config.c:9-80`, `src/main.c:154-170`); one-slot `status_msg`
   (`src/tgf.h:150`, `src/ui.c:104-108`).
 - **Impact:** no error taxonomy, no counters, no reliable operator feedback,
   lost messages between refreshes.
@@ -143,8 +143,8 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
   malformed-line skip), tracker round-trip
   and capacity, dispatch tagging/pacing, the config table from 05 §2, and
   resolution cursor/summary/handler behavior, history-handler filtering, and
-  backfill completion heuristics A/B + reset-without-done (74 tests,
-  298 checks). Missing: UI and main-loop dispatch
+  backfill completion heuristics A/B + reset-without-done (76 tests,
+  308 checks). Missing: UI and main-loop dispatch
   (`request_id_from_extra` is static in `src/main.c`; a
   `resolve_dest` misrouting regression there was caught only by live
   verification). The test and sanitize targets are POSIX-only.
@@ -207,13 +207,14 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
   expired dedupe entry.
 - **Fix gate:** define the intended unit of grouping and the single time basis.
 
-#### TD-14 — Conflated feature flag and permissive CLI
-- **Evidence:** `enable_sequential_forwarding` controls backfill and sorting
-  (`src/poll.c:55`, `src/forward.c:94-95`); any argv disables the dashboard, only `-d`
-  enables debug (`src/resolve.c:54-56`, `src/forward.c:246`, `src/main.c:131-145`).
-- **Impact:** cannot request ordering without backfill; typos silently change
-  UI mode.
-- **Fix gate:** split flags and add argument validation; amend 04 §1, 06 §1.
+#### TD-14 — Conflated feature flag and permissive CLI — **ADDRESSED (Step 4.6)**
+- **Evidence (pre-fix):** `enable_sequential_forwarding` controlled both
+  backfill and sorting; any argv disabled the dashboard and only `-d` enabled
+  debug, so typos silently changed UI mode.
+- **Resolution:** new `enable_ordering` config key (05 §2) enables sorting
+  without backfill (04 §1, 03 §2); `main` validates argv (only no-arg or `-d`)
+  and prints `Usage: … [-d]` + exit 1 otherwise (06 §1).
+- **Residual:** the dashboard state model is still TD-23.
 
 #### TD-15 — Unhandled TDLib auth states
 - **Evidence:** no branches for QR, registration, other-device confirmation,
@@ -264,8 +265,8 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 
 #### TD-24 — Dead and vestigial code — **PARTIALLY ADDRESSED**
 - **Evidence (remaining):** `last_msg_id`/`last_date` written, never read
-  (`src/tracker.c:33-52`); `config_free` (`src/config.c:79-89`) used only by
-  tests while production frees the same fields by hand (`src/main.c:161-165`);
+  (`src/tracker.c:33-52`); `config_free` (`src/config.c:82-92`) used only by
+  tests while production frees the same fields by hand (`src/main.c:164-168`);
   vestigial `(void)msg_id; (void)date;` in `tracker_store_set`
   (`src/tracker.c:34`).
 - **Removed:** `pending_req`, the `on_update` auth path, the unreachable
@@ -276,13 +277,13 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 
 #### TD-26 — Blocking auth input and signal handling quality
 - **Evidence:** `fgets` inside handlers (`src/auth.c:35-58`); `signal()` not
-  `sigaction` (`src/main.c:99-100`); up to 1 s shutdown latency.
+  `sigaction` (`src/main.c:102-103`); up to 1 s shutdown latency.
 - **Impact:** no cancellation, slow shutdown, prompt can outlive SIGINT.
 - **Structural fix:** input step decoupled from the receive loop; signal-safe
   flag; same user-visible prompts.
 
 #### TD-28 — CWD-relative, hardcoded paths
-- **Evidence:** `config.json` (`src/main.c:86`), `tdlib_db`/`tdlib_files`
+- **Evidence:** `config.json` (`src/main.c:89`), `tdlib_db`/`tdlib_files`
   (`src/auth.c:24-25`), `seq_tracker.txt` (`src/tracker.c:4`), default
   `history.txt` (`src/config.c:46`).
 - **Impact:** running from another directory creates a second profile; no
@@ -316,7 +317,7 @@ the step is too large.
 - Done (2026-11-19): backfill completion heuristics (04 §3.4–3.5) and the
   history handler are locked in by the characterization suite (`src/poll.c`
   is linked into `tests/tgf_tests`).
-- `specs/acceptance.md` added: 59-scenario manual checklist for TDLib, UI,
+- `specs/acceptance.md` added: 60-scenario manual checklist for TDLib, UI,
   file, and restart behavior that unit tests cannot cover.
 - Changing any existing assertion is a behavior change: amend the owning spec
   in the same change.
@@ -360,7 +361,7 @@ Update `nob.c` source list; keep the same binary name and CLI.
 
 **Done:** all ten modules plus `src/tgf.h` exist; `nob.c` compiles them with
 `-I.`/`-Isrc`; `tests/test_main.c` stubs `transport_send`/`transport_destroy`/
-`ui_status`/`ui_oom`/`ui_forwarded`. No behavior change; 298 checks pass.
+`ui_status`/`ui_oom`/`ui_forwarded`. No behavior change; 308 checks pass.
 
 ### Step 3 — Structural cleanups (behavior-preserving) — **mostly done**
 - Done: dead code removed (TD-24, partial — see register).
@@ -386,7 +387,8 @@ Order chosen by user risk:
    durable pending journal (TD-03, TD-27, TD-02).
 5. **Partially done (Step 4.5):** album split + truncation guard + cap
    warnings (TD-09). Reply-child excess and live pagination remain (Step 5).
-6. **Flag/CLI split** (TD-14) and **dashboard states** (TD-23).
+6. **Partially done (Step 4.6):** flag/CLI split (TD-14 addressed).
+   Dashboard states (TD-23) remain.
 
 ### Step 5 — Feature work
 Only after the above: real-time updates, config paths, multi-destination,
@@ -435,3 +437,4 @@ structural refactor would violate Phase 2:
 | 2026-11-19 | Step 4.4a done: durable forward queue (05 §5) + crash-safe history prune (TD-03, TD-27 addressed); 05 sections renumbered; TD-02 remains (4.4b) |
 | 2026-11-19 | Step 4.4b done: durable pending journal seq_pending.txt (05 §4.3, 04 amended); TD-02 addressed; Step 4.4 complete |
 | 2026-11-19 | Step 4.5 done (partial): album split fixes stack overflow, truncation guard, tracker/page-full warnings (TD-09 partial); reply excess + pagination remain |
+| 2026-11-19 | Step 4.6 done (partial): enable_ordering flag split + argv validation (TD-14 addressed); TD-23 dashboard states remain |

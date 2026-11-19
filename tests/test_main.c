@@ -100,6 +100,7 @@ static void reset_state(void) {
 
     rt.cfg.history_window_hours = 24;
     rt.cfg.enable_sequential_forwarding = 0;
+    rt.cfg.enable_ordering = 0;
     rt.cfg.sequence_direction = 0;
     rt.cfg.forward_delay_sec = 0;
     rt.dest_chat_id = -100777;
@@ -1242,6 +1243,32 @@ static void test_getme_handle(void) {
     CHECK(strcmp(captured_extra, "resolve_dest") == 0);
 }
 
+static void test_config_enable_ordering(void) {
+    write_file("config.json", "{\"api_id\":1,\"api_hash\":\"x\",\"dest_channel\":\"d\",\"source_channels\":[\"a\"],\"enable_ordering\":true}");
+    Config cfg;
+    CHECK_LL(config_load("config.json", &cfg), 0);
+    CHECK_LL(cfg.enable_ordering, 1);
+    CHECK_LL(cfg.enable_sequential_forwarding, 0);
+    config_free(&cfg);
+    write_file("config.json", "{\"api_id\":1,\"api_hash\":\"x\",\"dest_channel\":\"d\",\"source_channels\":[\"a\"],\"enable_ordering\":\"true\"}");
+    CHECK_LL(config_load("config.json", &cfg), 0);
+    CHECK_LL(cfg.enable_ordering, 0);
+    config_free(&cfg);
+}
+
+static void test_ordering_without_backfill(void) {
+    rt.cfg.enable_ordering = 1;
+    rt.cfg.enable_sequential_forwarding = 0;
+    rt.cfg.sequence_direction = 0;
+    PendingMsg msgs[3] = { make_msg(30, 0, 0, 300), make_msg(10, 0, 0, 100), make_msg(20, 0, 0, 200) };
+    process_msgs(&rt, -100123, msgs, 3);
+    CHECK_LL(rt.fwd_queue_count, 3);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].ids[0], 10);
+    CHECK_LL(rt.fwd_queue[(rt.fwd_queue_head + 1) % rt.fwd_queue_cap].ids[0], 20);
+    CHECK_LL(rt.fwd_queue[(rt.fwd_queue_head + 2) % rt.fwd_queue_cap].ids[0], 30);
+    CHECK_LL(rt.tracker.count, 0);
+}
+
 typedef void (*test_fn)(void);
 
 static void run_test(const char *name, test_fn fn) {
@@ -1337,6 +1364,8 @@ int main(void) {
     run_test("config_non_string_sources", test_config_non_string_sources);
     run_test("config_fractional_api_id", test_config_fractional_api_id);
     run_test("config_empty_sources", test_config_empty_sources);
+    run_test("config_enable_ordering", test_config_enable_ordering);
+    run_test("ordering_without_backfill", test_ordering_without_backfill);
     run_test("resolve_next_requests", test_resolve_next_requests);
     run_test("resolve_source_handle", test_resolve_source_handle);
     run_test("resolve_partial_summary", test_resolve_partial_summary);

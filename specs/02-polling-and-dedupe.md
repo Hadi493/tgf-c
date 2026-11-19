@@ -6,7 +6,7 @@ Status: baseline · Owner: `src/poll.c` (`poll_channels`, `history_response`), `
 
 Polling is time-driven, never event-driven. `poll_channels` (`src/poll.c:7-17`)
 runs when the gate in §1.1 is true and `now - last_poll >= 5`
-(`src/main.c:124-130`). There is no `updateNewMessage` subscription; new posts are
+(`src/main.c:127-133`). There is no `updateNewMessage` subscription; new posts are
 discovered only by re-reading history.
 
 ### 1.1 Gate
@@ -52,7 +52,7 @@ completion path (04 §3.5); in normal mode it is a no-op.
 
 Memory ownership: `main.c` parses each response once (`cJSON_Parse`) and calls
 `cJSON_Delete(root)` exactly once after the handler returns
-(`src/main.c:108-119`). Response handlers, including `history_response`, read
+(`src/main.c:111-122`). Response handlers, including `history_response`, read
 from `root` but must not free it; deleting `root` in a handler double-frees
 (`src/poll.c` backfill and completion paths previously did).
 
@@ -163,7 +163,7 @@ An expired entry is **not removed by lookup**; it stays until pruning.
 ### 3.5 Prune
 
 `history_store_prune` (`src/history.c:104-133`) runs from the main loop when
-`now - last_prune >= 1200` (20 min, `src/main.c:147-148`). `last_prune` starts at 0,
+`now - last_prune >= 1200` (20 min, `src/main.c:150-151`). `last_prune` starts at 0,
 so a prune runs on the **first loop iteration** (before authorization) and
 every 20 minutes after that.
 

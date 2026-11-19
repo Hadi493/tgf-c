@@ -4,26 +4,26 @@ Status: baseline · Owner: `src/ui.c`, `src/main.c` · Depends on: 00, 01
 
 ## 1. argv behavior
 
-`argc` is ignored (`(void)argc`, `src/main.c:81`). Only `argv[1]` is inspected:
+`argv` is validated at startup (`src/main.c:81-84`): `argc` must be 1, or 2
+with `argv[1] == "-d"`. Anything else prints `Usage: <argv0> [-d]` to stderr
+and exits **1** (TD-14 addressed).
 
 | Invocation | Dashboard | Debug lines | Status output |
 |---|---|---|---|
-| `./tgf` | yes, after authorization | no | stored for dashboard, else stderr |
+| `./tgf` | yes, after full resolution | no | stored for dashboard, else stderr |
 | `./tgf -d` | no | yes | stderr |
-| `./tgf anything-else` | no | no | stderr |
-| `./tgf -d extra …` | no | yes | stderr |
+| anything else | — | — | `Usage: … [-d]` to stderr, exit 1 |
 
-`ui_init` (`src/main.c:84`) selects the ncurses sink when `argv[1] == NULL`,
+`ui_init` (`src/main.c:90`) selects the ncurses sink when `argv[1] == NULL`,
 else the stderr sink; debug is exactly `-d`.
 
-There is no argument parsing, no `--help`, no usage, no config-path override,
-and no validation. Unknown arguments silently select plain stderr mode. (TD-14
-proposes rejecting them; that is not current behavior.)
+There is no `--help` and no config-path override. Unknown arguments are
+rejected with a usage line (TD-14 addressed).
 
 ## 2. Output channels
 
 Both stdout and stderr are unbuffered (`setvbuf(..., _IONBF)`,
-`src/main.c:82-83`).
+`src/main.c:85-86`).
 
 | Message | Stream |
 |---|---|
@@ -63,7 +63,7 @@ after `authorized` in dashboard mode. Consequences:
 
 Initialized on the first loop iteration where `argv[1] == NULL && authorized
 && dest_resolved && source_count >= 1 && !resolve_active`
-(`src/main.c:131-145`). The full-resolution gate (Step 4.1) ensures no
+(`src/main.c:134-148`). The full-resolution gate (Step 4.1) ensures no
 dashboard starts on any fatal resolution path:
 
 ```
@@ -168,7 +168,7 @@ timeout (~1 s), plus any blocking auth prompt (01 §2.4).
 |---|---|---|
 | SC-06-01 | `./tgf` with a cached session | Dashboard appears; `Target Channel` matches config |
 | SC-06-02 | `./tgf -d` | No dashboard; debug stdout + status stderr |
-| SC-06-03 | `./tgf foo` | No dashboard; only `ui_status` lines on stderr |
+| SC-06-03 | `./tgf foo` | `Usage: … [-d]` to stderr, exit 1 |
 | SC-06-04 | Forward one message in dashboard mode | `FORWARDED` source updates within ~1 s |
 | SC-06-05 | Misconfigured destination | `ERROR: Failed to resolve destination ...`, exit 1 |
 | SC-06-06 | Send SIGINT | Terminal restored, shell prompt returns, exit 0 |
@@ -183,3 +183,4 @@ timeout (~1 s), plus any blocking auth prompt (01 §2.4).
 | 2026-11-17 | Step 2: moved UI into `src/ui.c`; refreshed citations |
 | 2026-11-17 | Step 4.1: Destination resolution failure now fatal (exit 1); all-sources-failed and empty-sources now fatal (exit 1); dashboard never starts on resolution failure |
 | 2026-11-19 | Step 4.1 restoration: dashboard init gated on full resolution (no dashboard on fatal paths); ui_init sink selection documented; refreshed citations |
+| 2026-11-19 | Step 4.6: argv validated (only no-arg or -d; else usage + exit 1); TD-14 addressed; SC-06-03 updated |

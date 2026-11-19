@@ -4,16 +4,17 @@ Status: baseline · Owner: `src/tracker.c`, `src/poll.c` (`history_response`), `
 
 ## 1. What the flag means
 
-`enable_sequential_forwarding` turns on **two independent behaviors at once**:
+`enable_sequential_forwarding` controls the **backfill phase**: before
+anything is forwarded, collect the channel’s history window into a pending
+buffer (journaled, 05 §4.3), paging backwards, then forward it in one ordered
+pass. It also enables ordering.
 
-1. **Backfill phase** — before anything is forwarded, collect the channel’s
-   history window into an in-memory pending buffer, paging backwards, then
-   forward it in one ordered pass.
-2. **Ordering** — sort each `process_msgs` batch by date (asc or desc).
+`enable_ordering` (05 §2) enables **ordering only** — sort each `process_msgs`
+batch by date (asc or desc) — without backfill, tracker load/save, or paging
+(TD-14 addressed). Ordering is active when either flag is on.
 
-When the flag is off there is no tracker load/save, no paging, no pending
-buffer, and no explicit sort (wire order, newest-first). There is no way to
-enable ordering without backfill (TD-14).
+When both flags are off there is no tracker load/save, no paging, no pending
+buffer, and no explicit sort (wire order, newest-first).
 
 `sequence_direction` (`"asc"` default, `"desc"`) only affects the sort.
 
@@ -218,6 +219,7 @@ the batch.
 | SC-04-06 | Restart after a completed backfill | No re-backfill; only new posts |
 | SC-04-07 | 129 distinct sources | 129th never tracks or forwards |
 | SC-04-08 | Empty channel | Tracker row written with `backfill_done = 1`, no forwards |
+| SC-04-09 | `enable_ordering: true`, sequential off | Live batches sorted asc/desc; no backfill, no tracker file |
 
 ## Amendment log
 
@@ -229,3 +231,4 @@ the batch.
 | 2026-11-19 | Refreshed citations after Step 3/4.1 changes in `src/poll.c` and `src/tracker.c`; backfill behavior unchanged |
 | 2026-11-19 | Step 4.4b: pending buffer journaled to seq_pending.txt (05 §4.3), replayed on restart, compacted on flush; TD-02 addressed; mid-backfill loss and re-scan duplicate cases closed; SC-04-04 updated |
 | 2026-11-19 | Step 4.5: tracker-full warning when an entry cannot be created (TD-09 partial) |
+| 2026-11-19 | Step 4.6: enable_ordering splits ordering from backfill (TD-14 addressed); SC-04-09 added |

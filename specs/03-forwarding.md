@@ -14,15 +14,16 @@ filtering. It is called from two places:
 
 ## 2. Ordering
 
-When sequential mode is **on** and `count > 1`, the array is sorted in place
-before grouping (`src/forward.c:94-95`):
+When ordering is active (`enable_sequential_forwarding` or `enable_ordering`)
+and `count > 1`, the array is sorted in place before grouping
+(`src/forward.c:94-95`):
 
 | `sequence_direction` | Comparator | Order |
 |---|---|---|
 | `asc` (0, default) | date ascending, then id ascending | oldest → newest |
 | `desc` (1) | date descending, then id descending | newest → oldest |
 
-When sequential mode is **off**, the array is not sorted; wire order
+When both flags are **off**, the array is not sorted; wire order
 (newest-first) is preserved.
 
 Intra-job ordering is **always ascending by message id**, regardless of
@@ -168,7 +169,7 @@ size (~256 × 20 chars) fits, so this guard is not reached in practice.
 ## 6. Response handling
 
 All `forwardMessages` errors arrive as `@type == "error"` and are routed to
-`on_error`, not `on_response` (`src/main.c:115-116`). `on_error` prints:
+`on_error`, not `on_response` (`src/main.c:118-119`). `on_error` prints:
 
 ```
 ERROR [fwd_<...>] code=<n>: <message>
@@ -294,3 +295,4 @@ success. Un-marking the dedupe entry on failure is deliberately **not** done
 | 2026-11-19 | Step 4.3: at-least-once delivery — in-flight slot, bounded retry (3 attempts), flood-wait pause, permanent-drop and timeout statuses, stale-response guard; marking stays at enqueue (un-mark option rejected); TD-01 partially addressed, TD-06 addressed; restart loss remains TD-03 (Step 4.4) |
 | 2026-11-19 | Step 4.4a: queue + in-flight persisted to fwd_queue.txt (05 §5), resume on restart; TD-03 addressed; SC-03-07 updated |
 | 2026-11-19 | Step 4.5: album grouping splits >256-member albums (overflow fixed, no loss); transport_send drops truncated requests instead of sending; reply-child excess remains a documented residual; SC-03-11 added |
+| 2026-11-19 | Step 4.6: ordering active when enable_sequential_forwarding OR enable_ordering (TD-14) |

@@ -11,6 +11,7 @@ typedef struct {
     int   forward_delay_sec;
     int   history_window_hours;
     int   enable_sequential_forwarding;
+    int   enable_ordering;
     int   sequence_direction;
 } Config;
 

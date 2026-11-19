@@ -14,9 +14,9 @@ single-threaded CLI program backed by flat files.
 | Concern | Choice | Evidence |
 |---|---|---|
 | Language | C, compiled as one binary | `nob.c:220-235` |
-| Telegram API | TDLib JSON interface (`libtdjson`) | `src/transport.c:3-4`, `src/main.c:89-91` |
+| Telegram API | TDLib JSON interface (`libtdjson`) | `src/transport.c:3-4`, `src/main.c:92-94` |
 | JSON | vendored cJSON | `src/tgf.h:10`, `cJSON.c` |
-| Terminal UI | ncurses, disabled with `TGF_NOGUI` or any argv | `src/ui.c:29-89`, `src/main.c:131-145` |
+| Terminal UI | ncurses, disabled with `TGF_NOGUI` or any argv | `src/ui.c:29-89`, `src/main.c:134-148` |
 | Build | `nob` (self-rebuilding C build script) | `nob.c` |
 | Storage | `config.json`, `history.txt`, `seq_tracker.txt`, `tdlib_db/` | 05 |
 | Tests / CI | `./nob test` (POSIX) + GitHub Actions (`.github/workflows/ci.yml`) | `nob.c:80-97`, TD-17 |
@@ -85,7 +85,7 @@ TDLib is pinned as a git submodule at `v1.8.0-10143-ga17f87c4c`
 
 - **One thread.** All TDLib traffic is the blocking JSON client:
   `td_json_client_send` and `td_json_client_receive(client, 1.0)`
-  (`src/transport.c:6-29`, `src/main.c:106`).
+  (`src/transport.c:6-29`, `src/main.c:109`).
 - **One tick ≈ 1 s.** `receive` blocks up to one second, so every periodic task
   is scheduled by comparing `time(NULL)` deltas in the loop.
 - **No callbacks.** Responses are matched to requests only by the `@extra`
@@ -99,7 +99,7 @@ TDLib is pinned as a git submodule at `v1.8.0-10143-ga17f87c4c`
   (`resolve_dest`, `getme`) are matched before prefix tags (`resolve_`).
 - **Single parsing for responses.** `main` parses each response once and passes
   the `cJSON *root` to handlers, deleting it after the handler returns
-  (`src/main.c:108-119`). The auth handler still receives the raw string and
+  (`src/main.c:111-122`). The auth handler still receives the raw string and
   uses `strstr` (`src/auth.c:19`).
 - **Blocking auth.** Phone/code/2FA prompts use `fgets(stdin)` inside the
   auth handler (`src/auth.c:35-58`); the loop cannot tick while waiting.
@@ -108,7 +108,7 @@ TDLib is pinned as a git submodule at `v1.8.0-10143-ga17f87c4c`
 
 ### 6.1 Configuration (immutable after load)
 
-`Config` (`src/config.h:4-15`) is loaded once by `config_load` and stored as
+`Config` (`src/config.h:4-16`) is loaded once by `config_load` and stored as
 `rt.cfg`; no module keeps a copy.
 
 | Field | Type | Meaning |
@@ -175,7 +175,7 @@ All fields live in `Runtime` (`src/tgf.h:123-151`).
                     └────────────┘
 ```
 
-There is no enum. The `ACTIVE` gate is evaluated each tick at `src/main.c:124`.
+There is no enum. The `ACTIVE` gate is evaluated each tick at `src/main.c:127`.
 
 ## 8. Primary data flow
 
@@ -215,7 +215,7 @@ TDLib getChatHistory response (newest first, ≤ MSG_LIMIT)
    polled.
 5. Polling starts only when `authorized && dest_resolved && source_count >= 1
    && !resolve_active`.
-6. `seq_tracker` is loaded only when sequential mode is enabled (`src/main.c:98`);
+6. `seq_tracker` is loaded only when sequential mode is enabled (`src/main.c:101`);
    the file is written only by sequential paths and `flush_pending`.
 7. Every runtime path is relative to the process CWD.
 8. The dedupe key is `<chat_id>_<message_id>` (`src/history.c:62`, `87`).
