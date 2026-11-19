@@ -87,7 +87,7 @@ static int run_tests(void)
     cmd_append(&cmd, "-I.", "-Isrc");
     nob_cc_output(&cmd, TEST_BIN);
     cmd_append(&cmd, "tests/test_main.c", "src/tracker.c", "src/history.c", "src/forward.c",
-               "src/config.c", "src/resolve.c", "cJSON.c");
+               "src/config.c", "src/resolve.c", "src/poll.c", "cJSON.c");
 
     if (!cmd_run(&cmd)) return 0;
 

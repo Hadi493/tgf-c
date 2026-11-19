@@ -385,6 +385,210 @@ static void test_history_load_skips_malformed(void) {
     CHECK(history_store_has(&rt.history, &rt.cfg, -100, 6));
 }
 
+static cJSON *msg_obj(long long id, long long date, long long album, long long reply, long long chat) {
+    cJSON *m = cJSON_CreateObject();
+    cJSON_AddNumberToObject(m, "id", (double)id);
+    cJSON_AddNumberToObject(m, "date", (double)date);
+    cJSON_AddNumberToObject(m, "chat_id", (double)chat);
+    if (album) cJSON_AddNumberToObject(m, "media_album_id", (double)album);
+    if (reply) {
+        cJSON *r = cJSON_CreateObject();
+        cJSON_AddNumberToObject(r, "message_id", (double)reply);
+        cJSON_AddItemToObject(m, "reply_to", r);
+    }
+    return m;
+}
+
+static cJSON *root_with(cJSON *arr) {
+    cJSON *r = cJSON_CreateObject();
+    cJSON_AddItemToObject(r, "messages", arr);
+    return r;
+}
+
+static void test_history_normal_filters(void) {
+    time_t now = time(NULL);
+    history_store_add(&rt.history, &rt.cfg, -100, 20);
+    cJSON *arr = cJSON_CreateArray();
+    cJSON_AddItemToArray(arr, msg_obj(0, now, 0, 0, -100));
+    cJSON_AddItemToArray(arr, msg_obj(20, now, 0, 0, -100));
+    cJSON_AddItemToArray(arr, msg_obj(10, now - 25 * 3600, 0, 0, -100));
+    cJSON_AddItemToArray(arr, msg_obj(30, now, 0, 0, -100));
+    cJSON *root = root_with(arr);
+    history_response(&rt, NULL, root, -100);
+    cJSON_Delete(root);
+    CHECK_LL(rt.fwd_queue_count, 1);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].ids[0], 30);
+    CHECK(history_store_has(&rt.history, &rt.cfg, -100, 30));
+}
+
+static void test_history_normal_wire_order(void) {
+    time_t now = time(NULL);
+    cJSON *arr = cJSON_CreateArray();
+    cJSON_AddItemToArray(arr, msg_obj(40, now, 0, 0, -100));
+    cJSON_AddItemToArray(arr, msg_obj(30, now, 0, 0, -100));
+    cJSON *root = root_with(arr);
+    history_response(&rt, NULL, root, -100);
+    cJSON_Delete(root);
+    CHECK_LL(rt.fwd_queue_count, 2);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].ids[0], 40);
+    CHECK_LL(rt.fwd_queue[(rt.fwd_queue_head + 1) % rt.fwd_queue_cap].ids[0], 30);
+}
+
+static void test_history_normal_empty_noop(void) {
+    cJSON *root = root_with(cJSON_CreateArray());
+    history_response(&rt, NULL, root, -100);
+    cJSON_Delete(root);
+    CHECK_LL(rt.fwd_queue_count, 0);
+    CHECK_LL(rt.tracker.count, 0);
+}
+
+static void test_history_sequential_new_status(void) {
+    rt.cfg.enable_sequential_forwarding = 1;
+    tracker_store_set_backfill_done(&rt.tracker, -100, 1);
+    cJSON *arr = cJSON_CreateArray();
+    cJSON_AddItemToArray(arr, msg_obj(30, time(NULL), 0, 0, -100));
+    cJSON *root = root_with(arr);
+    history_response(&rt, NULL, root, -100);
+    cJSON_Delete(root);
+    CHECK_STR_CONTAINS(rt.status_msg, "New: 1 msgs");
+    CHECK_LL(rt.fwd_queue_count, 1);
+}
+
+static void test_backfill_collect_and_page(void) {
+    rt.cfg.enable_sequential_forwarding = 1;
+    time_t now = time(NULL);
+    cJSON *arr = cJSON_CreateArray();
+    cJSON_AddItemToArray(arr, msg_obj(30, now, 0, 0, -100));
+    cJSON_AddItemToArray(arr, msg_obj(20, now, 0, 0, -100));
+    cJSON_AddItemToArray(arr, msg_obj(10, now, 0, 0, -100));
+    cJSON *root = root_with(arr);
+    history_response(&rt, NULL, root, -100);
+    cJSON_Delete(root);
+    SeqEntry *e = find_tracker(-100);
+    CHECK(e != NULL);
+    CHECK_LL(e->pending_count, 3);
+    CHECK_LL(tracker_store_get_scan_from(&rt.tracker, -100), 10);
+    CHECK_LL(tracker_store_is_backfill_done(&rt.tracker, -100), 0);
+    CHECK_LL(rt.fwd_queue_count, 0);
+    CHECK_STR_CONTAINS(rt.status_msg, "Backfill: 3 msgs");
+}
+
+static void test_backfill_echo_skip(void) {
+    rt.cfg.enable_sequential_forwarding = 1;
+    tracker_store_set_scan_from(&rt.tracker, -100, 50);
+    cJSON *arr = cJSON_CreateArray();
+    cJSON_AddItemToArray(arr, msg_obj(50, time(NULL), 0, 0, -100));
+    cJSON_AddItemToArray(arr, msg_obj(40, time(NULL), 0, 0, -100));
+    cJSON *root = root_with(arr);
+    history_response(&rt, NULL, root, -100);
+    cJSON_Delete(root);
+    CHECK_LL(find_tracker(-100)->pending_count, 1);
+    CHECK_LL(tracker_store_get_scan_from(&rt.tracker, -100), 40);
+}
+
+static void test_backfill_no_dedupe(void) {
+    rt.cfg.enable_sequential_forwarding = 1;
+    history_store_add(&rt.history, &rt.cfg, -100, 30);
+    cJSON *arr = cJSON_CreateArray();
+    cJSON_AddItemToArray(arr, msg_obj(30, time(NULL), 0, 0, -100));
+    cJSON *root = root_with(arr);
+    history_response(&rt, NULL, root, -100);
+    cJSON_Delete(root);
+    CHECK_LL(find_tracker(-100)->pending_count, 1);
+}
+
+static void test_backfill_completion_a(void) {
+    rt.cfg.enable_sequential_forwarding = 1;
+    time_t old = time(NULL) - 25 * 3600;
+    tracker_store_set_scan_from(&rt.tracker, -100, 50);
+    tracker_store_pending_append(&rt.tracker, -100, make_msg(60, 0, 0, old + 3600));
+    cJSON *arr = cJSON_CreateArray();
+    cJSON_AddItemToArray(arr, msg_obj(40, old, 0, 0, -100));
+    cJSON_AddItemToArray(arr, msg_obj(30, old, 0, 0, -100));
+    cJSON *root = root_with(arr);
+    history_response(&rt, NULL, root, -100);
+    cJSON_Delete(root);
+    CHECK_LL(rt.fwd_queue_count, 1);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].ids[0], 60);
+    CHECK_LL(tracker_store_is_backfill_done(&rt.tracker, -100), 1);
+    CHECK_LL(tracker_store_get_scan_from(&rt.tracker, -100), 0);
+    CHECK_LL(find_tracker(-100)->pending_count, 0);
+}
+
+static void test_backfill_completion_b(void) {
+    rt.cfg.enable_sequential_forwarding = 1;
+    tracker_store_set_scan_from(&rt.tracker, -100, 50);
+    tracker_store_pending_append(&rt.tracker, -100, make_msg(60, 0, 0, time(NULL)));
+    cJSON *arr = cJSON_CreateArray();
+    cJSON_AddItemToArray(arr, msg_obj(50, time(NULL), 0, 0, -100));
+    cJSON *root = root_with(arr);
+    history_response(&rt, NULL, root, -100);
+    cJSON_Delete(root);
+    CHECK_LL(rt.fwd_queue_count, 1);
+    CHECK_LL(tracker_store_is_backfill_done(&rt.tracker, -100), 1);
+    CHECK_LL(tracker_store_get_scan_from(&rt.tracker, -100), 0);
+}
+
+static void test_backfill_reset_without_done(void) {
+    rt.cfg.enable_sequential_forwarding = 1;
+    tracker_store_set_scan_from(&rt.tracker, -100, 50);
+    cJSON *arr = cJSON_CreateArray();
+    cJSON_AddItemToArray(arr, msg_obj(50, time(NULL), 0, 0, -100));
+    cJSON *root = root_with(arr);
+    history_response(&rt, NULL, root, -100);
+    cJSON_Delete(root);
+    CHECK_LL(tracker_store_get_scan_from(&rt.tracker, -100), 0);
+    CHECK_LL(tracker_store_is_backfill_done(&rt.tracker, -100), 0);
+    CHECK_LL(rt.fwd_queue_count, 0);
+}
+
+static void test_backfill_total_zero(void) {
+    rt.cfg.enable_sequential_forwarding = 1;
+    tracker_store_set_scan_from(&rt.tracker, -100, 50);
+    tracker_store_pending_append(&rt.tracker, -100, make_msg(60, 0, 0, time(NULL)));
+    cJSON *root = root_with(cJSON_CreateArray());
+    history_response(&rt, NULL, root, -100);
+    cJSON_Delete(root);
+    CHECK_LL(rt.fwd_queue_count, 1);
+    CHECK_LL(tracker_store_is_backfill_done(&rt.tracker, -100), 1);
+    CHECK_LL(tracker_store_get_scan_from(&rt.tracker, -100), 0);
+}
+
+static void test_backfill_straddle(void) {
+    rt.cfg.enable_sequential_forwarding = 1;
+    time_t now = time(NULL);
+    cJSON *arr = cJSON_CreateArray();
+    cJSON_AddItemToArray(arr, msg_obj(30, now, 0, 0, -100));
+    cJSON_AddItemToArray(arr, msg_obj(20, now - 25 * 3600, 0, 0, -100));
+    cJSON *root = root_with(arr);
+    history_response(&rt, NULL, root, -100);
+    cJSON_Delete(root);
+    CHECK_LL(tracker_store_get_scan_from(&rt.tracker, -100), 20);
+    CHECK_LL(tracker_store_is_backfill_done(&rt.tracker, -100), 0);
+    CHECK_LL(find_tracker(-100)->pending_count, 1);
+
+    cJSON *arr2 = cJSON_CreateArray();
+    cJSON_AddItemToArray(arr2, msg_obj(10, now - 25 * 3600, 0, 0, -100));
+    cJSON *root2 = root_with(arr2);
+    history_response(&rt, NULL, root2, -100);
+    cJSON_Delete(root2);
+    CHECK_LL(tracker_store_is_backfill_done(&rt.tracker, -100), 1);
+    CHECK_LL(rt.fwd_queue_count, 1);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].ids[0], 30);
+}
+
+static void test_history_handle_routes(void) {
+    cJSON *arr = cJSON_CreateArray();
+    cJSON_AddItemToArray(arr, msg_obj(30, time(NULL), 0, 0, -100));
+    cJSON *root = root_with(arr);
+    RequestId id = { REQ_HISTORY, -100, 0 };
+    char *argv[] = { NULL, NULL };
+    history_handle(&rt, NULL, root, id, argv);
+    cJSON_Delete(root);
+    CHECK_LL(rt.fwd_queue_count, 1);
+    CHECK_LL(rt.fwd_queue[rt.fwd_queue_head].ids[0], 30);
+}
+
 static void test_tracker_load_fields(void) {
     write_file("seq_tracker.txt",
                "-111 10 100 5 1\n"
@@ -802,6 +1006,19 @@ int main(void) {
     run_test("history_prune_removes", test_history_prune_removes);
     run_test("history_prune_repairs_chains", test_history_prune_repairs_chains);
     run_test("history_load_skips_malformed", test_history_load_skips_malformed);
+    run_test("history_normal_filters", test_history_normal_filters);
+    run_test("history_normal_wire_order", test_history_normal_wire_order);
+    run_test("history_normal_empty_noop", test_history_normal_empty_noop);
+    run_test("history_sequential_new_status", test_history_sequential_new_status);
+    run_test("backfill_collect_and_page", test_backfill_collect_and_page);
+    run_test("backfill_echo_skip", test_backfill_echo_skip);
+    run_test("backfill_no_dedupe", test_backfill_no_dedupe);
+    run_test("backfill_completion_a", test_backfill_completion_a);
+    run_test("backfill_completion_b", test_backfill_completion_b);
+    run_test("backfill_reset_without_done", test_backfill_reset_without_done);
+    run_test("backfill_total_zero", test_backfill_total_zero);
+    run_test("backfill_straddle", test_backfill_straddle);
+    run_test("history_handle_routes", test_history_handle_routes);
     run_test("tracker_load_fields", test_tracker_load_fields);
     run_test("tracker_save_roundtrip", test_tracker_save_roundtrip);
     run_test("tracker_capacity", test_tracker_capacity);

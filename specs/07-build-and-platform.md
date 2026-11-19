@@ -135,7 +135,7 @@ Tests (Step 0 of spec 99):
 Builds `tests/tgf_tests` with `-g -O1 -fno-omit-frame-pointer
 -fsanitize=address,undefined` and runs it in a temporary working directory. It
 links `tests/test_main.c`, `src/tracker.c`, `src/history.c`, `src/forward.c`,
-`src/config.c`, `src/resolve.c`, and `cJSON.c` with stubbed
+`src/config.c`, `src/resolve.c`, `src/poll.c`, and `cJSON.c` with stubbed
 `transport_send`/`transport_destroy`/`ui_status`/`ui_oom`/`ui_forwarded`;
 it does not require TDLib, ncurses, or a session (config files are written by
 the tests).
@@ -161,7 +161,7 @@ warnings in those files are only visible from `./nob`. Baseline status:
 - `cc -Wall -Wextra -Wshadow -Wpedantic -fsanitize=address -I. -Isrc -c src/main.c`
   (with the TDLib include paths) is clean.
 - `./nob` build passes.
-- `./nob test` passes 43 tests / 179 checks under ASan+UBSan.
+- `./nob test` passes 56 tests / 220 checks under ASan+UBSan.
 - cppcheck (with `nob.h:` filtered, as in `AGENTS.md`) reports 2 errors in
   vendored `cJSON.c` (`invalidFunctionArg`, lines 113 and 415) and 16 warnings,
   also in `cJSON.c` (unchanged baseline). In `src/` it reports style-level

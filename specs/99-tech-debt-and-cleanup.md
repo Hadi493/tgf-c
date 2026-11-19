@@ -130,16 +130,18 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
   dedupe add/has/expire/prune (including TD-04 chain repair and TD-29
   malformed-line skip), tracker round-trip
   and capacity, dispatch tagging/pacing, the config table from 05 §2, and
-  resolution cursor/summary/handler behavior (43 tests, 179 checks). Missing:
-  backfill completion/state transitions, the history handler, UI, and
-  main-loop dispatch (`request_id_from_extra` is static in `src/main.c`; a
+  resolution cursor/summary/handler behavior, history-handler filtering, and
+  backfill completion heuristics A/B + reset-without-done (56 tests,
+  220 checks). Missing: UI and main-loop dispatch
+  (`request_id_from_extra` is static in `src/main.c`; a
   `resolve_dest` misrouting regression there was caught only by live
   verification). The test and sanitize targets are POSIX-only.
-- **Impact:** the remaining seams (handler, UI, dispatch) still cannot be
+- **Impact:** the remaining seams (UI, dispatch) still cannot be
   regression-tested automatically.
-- **Structural fix (remaining):** backfill/handler tests, dispatch tests via a
-  seam for `request_id_from_extra`, and a Windows story for the test target.
-  Done: ASan/UBSan CI job (`.github/workflows/ci.yml`), `./nob sanitize`.
+- **Structural fix (remaining):** dispatch tests via a
+  seam for `request_id_from_extra`, UI tests, and a Windows story for the test
+  target. Done: ASan/UBSan CI job (`.github/workflows/ci.yml`), `./nob sanitize`,
+  backfill/handler tests.
 
 #### TD-19 — OOM and silent-failure paths — **ADDRESSED**
 - **Evidence:** `src/history.c:12` (rehash failure returns without resizing),
@@ -293,10 +295,14 @@ the step is too large.
   - dispatch: `forwardMessages` payload, single/batch tags, delay gate;
   - resolution: `resolve_next` cursor/requests, `resolve_source_handle`,
     partial-failure WARNING summary, `resolve_dest_handle`, `getme_handle`
-    (fatal exit paths are manual-only, SC-01-03/04/05).
-- Still to do (TD-17):
-  - backfill completion heuristics (04 §3.4–3.5) — the handler seam exists;
-    add cases for conditions A/B and the reset-without-done branch.
+    (fatal exit paths are manual-only, SC-01-03/04/05);
+  - history handler: normal-path filters (id-zero/dedupe/cutoff), wire order,
+    empty no-op, sequential status; backfill collection/paging, echo skip,
+    no-dedupe collection, completion A/B, reset-without-done, total-zero,
+    straddle.
+- Done (2026-11-19): backfill completion heuristics (04 §3.4–3.5) and the
+  history handler are locked in by the characterization suite (`src/poll.c`
+  is linked into `tests/tgf_tests`).
 - `specs/acceptance.md` added: 54-scenario manual checklist for TDLib, UI,
   file, and restart behavior that unit tests cannot cover.
 - Changing any existing assertion is a behavior change: amend the owning spec
@@ -341,7 +347,7 @@ Update `nob.c` source list; keep the same binary name and CLI.
 
 **Done:** all ten modules plus `src/tgf.h` exist; `nob.c` compiles them with
 `-I.`/`-Isrc`; `tests/test_main.c` stubs `transport_send`/`transport_destroy`/
-`ui_status`/`ui_oom`/`ui_forwarded`. No behavior change; 179 checks pass.
+`ui_status`/`ui_oom`/`ui_forwarded`. No behavior change; 220 checks pass.
 
 ### Step 3 — Structural cleanups (behavior-preserving) — **mostly done**
 - Done: dead code removed (TD-24, partial — see register).
@@ -352,7 +358,7 @@ Update `nob.c` source list; keep the same binary name and CLI.
 - Done: `ui_oom` single failure path with the same status texts (TD-19).
 - Done: `./nob sanitize` (ASan/UBSan) and `.github/workflows/ci.yml` (TD-17).
 - Remaining: optional const-correctness/style cleanup of the cppcheck findings
-  (07 §8); backfill-completion and history-handler tests (TD-17).
+  (07 §8); dispatch/UI tests and a Windows test story (TD-17).
 
 ### Step 4 — Behavior changes, one spec at a time
 Order chosen by user risk:
@@ -408,3 +414,4 @@ structural refactor would violate Phase 2:
 | 2026-11-18 | TD-19 design: add `ui_oom(const char *msg)` in `src/ui.c` (declared in `src/tgf.h`) that calls `ui_status(msg)`; replace all `ui_status("OOM: ...")` calls in `src/forward.c`, `src/history.c`, `src/tracker.c`, `src/poll.c` with `ui_oom("OOM: ...")` preserving exact status text. `src/config.c` keeps its own `fprintf(stderr)` contract (tested separately). |
 | 2026-11-19 | Step 3 marked mostly done (TD-19/TD-25 addressed, TD-24 partial, TD-17 CI + sanitize + resolve tests); Step 4.1 restored after loss in the seam rewrite (fatal resolution + clean client destroy + dashboard gate); fixed `resolve_dest` misrouting in `request_id_from_extra`; 42 tests / 175 checks; refreshed citations |
 | 2026-11-19 | Step 4.2 done (TD-04 prune rehash, TD-29 load guard); TD-18 docs fixed; 02/05 amended first; tombstone-hole test assertion flipped to the fixed contract |
+| 2026-11-19 | Step 3 leftover done: backfill completion + history-handler characterization tests (src/poll.c linked into the suite); 56 tests / 220 checks; no behavior change |

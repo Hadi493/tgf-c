@@ -97,15 +97,15 @@ Never weaken or suppress a warning to make a change land.
 ```
 
 `tests/test_main.c` links `src/tracker.c`, `src/history.c`, `src/forward.c`,
-`src/config.c`, `src/resolve.c`, and `cJSON.c`; it stubs `transport_send`/
+`src/config.c`, `src/resolve.c`, `src/poll.c`, and `cJSON.c`; it stubs `transport_send`/
 `transport_destroy`/`ui_status`/`ui_oom`/`ui_forwarded` and runs in a temporary CWD, so
 it never touches real config, session, history, or tracker files. It
-intentionally locks in current behavior, including known quirks (TD-04, TD-22).
+intentionally locks in current behavior, including known quirks (TD-22).
 Changing an assertion is a behavior change: amend the owning spec first.
 
 For any change, walk the scenarios in the owning spec (§"Acceptance
-scenarios") and state which ones you ran. Backfill completion heuristics are
-not covered yet; they become testable with the Step 2 handler seam.
+scenarios") and state which ones you ran. Backfill completion heuristics and the history handler are covered by the
+characterization suite.
 
 ## Code style
 
