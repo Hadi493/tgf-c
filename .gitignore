@@ -4,11 +4,14 @@ tgf
 tests/tgf_tests
 tests/tgf_e2e
 tests/tgf_e2e_tsan
+tests/tgf_core
 config.json
 *.txt
 *.bak
 tdlib_db
 tdlib_files
 lib/td/build/
+build/
+libtgf.a
 doc/
 Issues.md

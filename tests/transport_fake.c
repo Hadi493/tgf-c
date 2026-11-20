@@ -1,6 +1,7 @@
 #include "transport_fake.h"
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static char **script; static int script_n, script_i, script_cap;
 static char **sent; static int sent_n, sent_cap;
@@ -26,9 +27,14 @@ static void fs(void *c, const char *j) {
     if (sent_n == sent_cap) { sent_cap = sent_cap ? sent_cap * 2 : 16; sent = realloc(sent, sent_cap * sizeof(char *)); }
     sent[sent_n++] = strdup(j);
 }
-static const char *fr(void *c, double t) { (void)c; (void)t; return script_i < script_n ? script[script_i++] : NULL; }
+static const char *fr(void *c, double t) {
+    (void)c; (void)t;
+    if (script_i < script_n) return script[script_i++];
+    usleep(50000);   /* emulate the receive timeout; the real client blocks ~1 s */
+    return NULL;
+}
 static const char *fe(void *c, const char *j) { (void)c; (void)j; return NULL; }
 static void fd(void *c) { (void)c; }
 
-const Transport transport_fake = { fc, fs, fr, fe, fd };
+const tgf_transport transport_fake = { fc, fs, fr, fe, fd };
 void transport_destroy(void *c) { (void)c; }

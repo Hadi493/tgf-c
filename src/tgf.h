@@ -9,7 +9,7 @@
 
 #include "cJSON.h"
 #include "config.h"
-#include "transport.h"
+#include "../core/tgf_core.h"
 
 #define POLL_INTERVAL 5
 #define MSG_LIMIT     10000
@@ -121,9 +121,9 @@ static inline const char *cJSON_GetStr(const cJSON *obj, const char *key) {
     return v && cJSON_IsString(v) ? v->valuestring : NULL;
 }
 
-typedef struct {
+typedef struct Runtime {
     Config cfg;
-    const Transport *tp;
+    const tgf_transport *tp;
 
     int       authorized;
     int       dest_resolved;
@@ -134,6 +134,9 @@ typedef struct {
     int       resolve_index;
     int       resolve_active;
     int       debug;
+
+    void (*emit)(struct Runtime *rt, const tgf_event *ev);  /* core event sink (may be NULL) */
+    tgf_ctx  *core;                                   /* owning core (may be NULL) */
 
     HistoryStore history;
     TrackerStore tracker;
@@ -161,26 +164,20 @@ typedef struct {
 
 // --- functions ---
 
-typedef struct {
-    void (*status)(const char *msg);
-    void (*forwarded)(const char *source, const char *dest);
-    void (*redraw)(const char *dest, const char *source, int src_count, int delay);
-} Ui;
-
-void ui_init(Runtime *rt, bool dashboard, bool debug);
 void ui_status(const char *msg);
 void ui_oom(const char *msg);
 void ui_forwarded(const char *source, const char *dest);
 void ui_refresh(const char *dest, const char *source, int src_count, int delay);
-#ifndef TGF_NOGUI
-void ui_ncurses_init(void);
-void ui_ncurses_cleanup(void);
-#endif
+void ui_dashboard_begin(const char *dest, int delay);
+void ui_dashboard_event(const tgf_event *ev);
+void ui_dashboard_draw(void);
+void ui_dashboard_end(void);
 
 void transport_send(Runtime *rt, void *client, const char *type, const char *payload, RequestId id);
 void transport_destroy(void *client);
 
 void auth_handle(Runtime *rt, void *client, const char *json);
+void auth_submit(Runtime *rt, void *client, int kind, const char *value);
 void resolve_next(Runtime *rt, void *client);
 void getme_handle(Runtime *rt, void *client, cJSON *root, RequestId id, char *argv[]);
 void resolve_dest_handle(Runtime *rt, void *client, cJSON *root, RequestId id, char *argv[]);

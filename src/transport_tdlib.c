@@ -9,7 +9,7 @@ static const char *tdlib_receive(void *client, double timeout) { return td_json_
 static const char *tdlib_execute(void *client, const char *json) { return td_json_client_execute(client, json); }
 static void tdlib_destroy(void *client) { td_json_client_destroy(client); }
 
-const Transport transport_tdlib = {
+const tgf_transport transport_tdlib = {
     tdlib_create, tdlib_send, tdlib_receive, tdlib_execute, tdlib_destroy
 };
 

@@ -17,7 +17,7 @@ static void clean(void)
     cmd_run(&rm);
 #else
     Cmd rm = {0};
-    cmd_append(&rm, "rm", "-rf", TD_BUILD, "tgf", TEST_BIN, "tests/tgf_e2e", "tests/tgf_e2e_tsan", "nob.old");
+    cmd_append(&rm, "rm", "-rf", TD_BUILD, "tgf", TEST_BIN, "tests/tgf_e2e", "tests/tgf_e2e_tsan", "tests/tgf_core", "nob.old");
     cmd_run(&rm);
 #endif
 }
@@ -84,7 +84,7 @@ static int run_tests(void)
     nob_cc_flags(&cmd);
     cmd_append(&cmd, "-g", "-O1", "-fno-omit-frame-pointer");
     cmd_append(&cmd, "-fsanitize=address,undefined");
-    cmd_append(&cmd, "-I.", "-Isrc");
+    cmd_append(&cmd, "-I.", "-Isrc", "-Icore", "-pthread");
     nob_cc_output(&cmd, TEST_BIN);
     cmd_append(&cmd, "tests/test_main.c", "src/tracker.c", "src/history.c", "src/forward.c",
                "src/config.c", "src/resolve.c", "src/poll.c", "cJSON.c");
@@ -117,6 +117,28 @@ static int run_e2e(void)
     return cmd_run(&cmd);
 }
 
+static int run_core(void)
+{
+    Cmd cmd = {0};
+    nob_cc(&cmd);
+    nob_cc_flags(&cmd);
+    cmd_append(&cmd, "-g", "-O1", "-fno-omit-frame-pointer");
+    cmd_append(&cmd, "-fsanitize=address,undefined");
+    cmd_append(&cmd, "-DTGF_NOGUI");
+    cmd_append(&cmd, "-pthread");
+    cmd_append(&cmd, "-I.", "-Isrc", "-Icore", "-Itests");
+    nob_cc_output(&cmd, "tests/tgf_core");
+    cmd_append(&cmd, "tests/test_core.c", "tests/transport_fake.c", "src/core.c", "src/loop.c",
+               "src/transport.c", "src/auth.c", "src/resolve.c", "src/poll.c", "src/tracker.c",
+               "src/history.c", "src/forward.c", "src/config.c", "src/ui.c", "cJSON.c");
+
+    if (!cmd_run(&cmd)) return 0;
+
+    cmd.count = 0;
+    cmd_append(&cmd, "tests/tgf_core");
+    return cmd_run(&cmd);
+}
+
 static int run_tsan(void)
 {
     Cmd cmd = {0};
@@ -145,7 +167,7 @@ static int run_sanitize(void)
     nob_cc_flags(&cmd);
     cmd_append(&cmd, "-g", "-O1", "-fno-omit-frame-pointer");
     cmd_append(&cmd, "-fsanitize=address,undefined");
-    cmd_append(&cmd, "-I.", "-Isrc");
+    cmd_append(&cmd, "-I.", "-Isrc", "-Icore", "-pthread");
 
 #ifdef _WIN32
     cmd_append(&cmd, "-DTGF_NOGUI");
@@ -179,7 +201,7 @@ static int run_sanitize(void)
     cmd_append(&cmd, "-lncurses");
 #endif
 
-    cmd_append(&cmd, "-I.", "-Isrc");
+    cmd_append(&cmd, "-I.", "-Isrc", "-Icore", "-pthread");
     cmd_append(&cmd, "cJSON.c");
     nob_cc_output(&cmd, "tgf");
     cmd_append(&cmd, "src/tracker.c");
@@ -187,6 +209,7 @@ static int run_sanitize(void)
     cmd_append(&cmd, "src/forward.c");
     cmd_append(&cmd, "src/config.c");
     cmd_append(&cmd, "src/main.c");
+    cmd_append(&cmd, "src/core.c");
     cmd_append(&cmd, "src/loop.c");
     cmd_append(&cmd, "src/auth.c");
     cmd_append(&cmd, "src/resolve.c");
@@ -196,6 +219,40 @@ static int run_sanitize(void)
     cmd_append(&cmd, "src/ui.c");
 
     return cmd_run(&cmd);
+}
+
+static int build_libtgf(void)
+{
+    Cmd m = {0};
+    cmd_append(&m, "mkdir", "-p", "build/core");
+    if (!cmd_run(&m)) return 0;
+    nob_log(NOB_INFO, "Building libtgf.a ...");
+    const char *srcs[] = {"cJSON.c", "src/tracker.c", "src/history.c", "src/forward.c",
+        "src/config.c", "src/resolve.c", "src/poll.c", "src/loop.c", "src/transport.c",
+        "src/transport_tdlib.c", "src/auth.c", "src/core.c"};
+    int n = (int)(sizeof(srcs) / sizeof(srcs[0]));
+    char objs[8192]; objs[0] = 0;
+    for (int i = 0; i < n; i++) {
+        Cmd c = {0};
+        nob_cc(&c);
+        nob_cc_flags(&c);
+        cmd_append(&c, "-I.", "-Isrc", "-Icore", "-pthread", "-O2", "-c");
+        if (!check_system_td()) {
+            if (!td_already_built()) { if (!ensure_td_source()) return 0; if (!build_td()) return 0; }
+            cmd_append(&c, "-I" TD_SOURCE, "-I" TD_BUILD);
+        }
+        char out[256];
+        snprintf(out, sizeof(out), "build/core/%d.o", i);
+        nob_cc_output(&c, out);
+        cmd_append(&c, srcs[i]);
+        if (!cmd_run(&c)) return 0;
+        strncat(objs, out, sizeof(objs) - strlen(objs) - 1);
+        strncat(objs, " ", sizeof(objs) - strlen(objs) - 1);
+    }
+    Cmd a = {0};
+    cmd_append(&a, "ar", "rcs", "libtgf.a");
+    for (char *tok = strtok(objs, " "); tok; tok = strtok(NULL, " ")) cmd_append(&a, tok);
+    return cmd_run(&a);
 }
 
 int main(int argc, char **argv)
@@ -213,7 +270,8 @@ int main(int argc, char **argv)
         return 1;
 #else
         if (!run_tests()) return 1;
-        return run_e2e() ? 0 : 1;
+        if (!run_e2e()) return 1;
+        return run_core() ? 0 : 1;
 #endif
     }
 
@@ -253,6 +311,15 @@ int main(int argc, char **argv)
 #endif
     }
 
+    if (argc > 1 && strcmp(argv[1], "libtgf") == 0) {
+#ifdef _WIN32
+        nob_log(NOB_ERROR, "libtgf target is not supported on Windows yet");
+        return 1;
+#else
+        return build_libtgf() ? 0 : 1;
+#endif
+    }
+
     Cmd cmd = {0};
     nob_cc(&cmd);
     nob_cc_flags(&cmd);
@@ -289,22 +356,11 @@ int main(int argc, char **argv)
     cmd_append(&cmd, "-lncurses");
 #endif
 
-    cmd_append(&cmd, "-I.", "-Isrc");
-    cmd_append(&cmd, "cJSON.c");
+    if (!build_libtgf()) return 1;
+    cmd_append(&cmd, "-I.", "-Isrc", "-Icore", "-pthread");
     cmd_append(&cmd, "-O3");
     nob_cc_output(&cmd, "tgf");
-    cmd_append(&cmd, "src/tracker.c");
-    cmd_append(&cmd, "src/history.c");
-    cmd_append(&cmd, "src/forward.c");
-    cmd_append(&cmd, "src/config.c");
-    cmd_append(&cmd, "src/main.c");
-    cmd_append(&cmd, "src/loop.c");
-    cmd_append(&cmd, "src/auth.c");
-    cmd_append(&cmd, "src/resolve.c");
-    cmd_append(&cmd, "src/poll.c");
-    cmd_append(&cmd, "src/transport.c");
-    cmd_append(&cmd, "src/transport_tdlib.c");
-    cmd_append(&cmd, "src/ui.c");
+    cmd_append(&cmd, "src/main.c", "src/ui.c", "libtgf.a");
 
     if (!cmd_run(&cmd)) return 1;
     return 0;

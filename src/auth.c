@@ -15,6 +15,29 @@ static void json_escape_build(char *buf, size_t size, const char *key, const cha
     buf[pos < (int)size ? pos : (int)size - 1] = 0;
 }
 
+static void emit_auth(Runtime *rt, tgf_auth_state st) {
+    if (!rt->emit) return;
+    tgf_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.kind = TGF_EV_AUTH_STATE;
+    ev.auth = st;
+    rt->emit(rt, &ev);
+}
+
+/* Core command handler: the frontend submits phone/code/password; the core
+ * builds the request, sends it, then wipes the payload buffer. */
+void auth_submit(Runtime *rt, void *client, int kind, const char *value) {
+    char payload[256] = {0};
+    const char *key, *type;
+    RequestId id;
+    if (kind == TGF_AUTH_PHONE)     { key = "phone_number"; type = "setAuthenticationPhoneNumber"; id = (RequestId){REQ_AUTH_PHONE, 0, 0}; }
+    else if (kind == TGF_AUTH_CODE) { key = "code";         type = "checkAuthenticationCode";       id = (RequestId){REQ_AUTH_CODE, 0, 0}; }
+    else                            { key = "password";     type = "checkAuthenticationPassword";    id = (RequestId){REQ_AUTH_PW, 0, 0}; }
+    json_escape_build(payload, sizeof(payload), key, value);
+    transport_send(rt, client, type, payload, id);
+    memset(payload, 0, sizeof(payload));
+}
+
 void auth_handle(Runtime *rt, void *client, const char *json) {
     if (!strstr(json, "\"@type\":\"updateAuthorizationState\"")) return;
 
@@ -32,33 +55,16 @@ void auth_handle(Runtime *rt, void *client, const char *json) {
             "\"application_version\":\"1.0\"",
             rt->cfg.api_id, rt->cfg.api_hash);
         transport_send(rt, client, "setTdlibParameters", buf, (RequestId){REQ_AUTH_PARAMS, 0, 0});
+        emit_auth(rt, TGF_AUTH_PARAMS);
     } else if (strstr(json, "authorizationStateWaitPhoneNumber")) {
-        char phone[32] = {0};
-        printf("\033[2J\033[H");
-        printf("Welcome to the TGF\n");
-        printf("Enter your phone number with country code\n");
-        printf("Phone (+xxx): "); fflush(stdout);
-        if (fgets(phone, sizeof(phone), stdin)) phone[strcspn(phone, "\r\n")] = 0;
-        char payload[256] = {0};
-        json_escape_build(payload, sizeof(payload), "phone_number", phone);
-        transport_send(rt, client, "setAuthenticationPhoneNumber", payload, (RequestId){REQ_AUTH_PHONE, 0, 0});
+        emit_auth(rt, TGF_AUTH_PHONE);
     } else if (strstr(json, "authorizationStateWaitCode")) {
-        char code[32] = {0};
-        printf("Code: "); fflush(stdout);
-        if (fgets(code, sizeof(code), stdin)) code[strcspn(code, "\r\n")] = 0;
-        char payload[256] = {0};
-        json_escape_build(payload, sizeof(payload), "code", code);
-        transport_send(rt, client, "checkAuthenticationCode", payload, (RequestId){REQ_AUTH_CODE, 0, 0});
+        emit_auth(rt, TGF_AUTH_CODE);
     } else if (strstr(json, "authorizationStateWaitPassword")) {
-        char pw[128] = {0};
-        printf("2FA password: "); fflush(stdout);
-        if (fgets(pw, sizeof(pw), stdin)) pw[strcspn(pw, "\r\n")] = 0;
-        char payload[256] = {0};
-        json_escape_build(payload, sizeof(payload), "password", pw);
-        transport_send(rt, client, "checkAuthenticationPassword", payload, (RequestId){REQ_AUTH_PW, 0, 0});
+        emit_auth(rt, TGF_AUTH_PASSWORD);
     } else if (strstr(json, "authorizationStateReady")) {
         rt->authorized = 1;
-        printf("\n✓ Authorized!\n");
+        emit_auth(rt, TGF_AUTH_READY);
         const char *dest_name = rt->cfg.dest_channel;
         if (dest_name[0] == '@') dest_name++;
         if (strcmp(dest_name, "me") == 0 || strcmp(dest_name, "Me") == 0) {
@@ -68,5 +74,9 @@ void auth_handle(Runtime *rt, void *client, const char *json) {
             snprintf(payload, sizeof(payload), "\"username\":\"%s\"", dest_name);
             transport_send(rt, client, "searchPublicChat", payload, (RequestId){REQ_RESOLVE_DEST, 0, 0});
         }
+    } else if (strstr(json, "authorizationStateLoggingOut")) {
+        emit_auth(rt, TGF_AUTH_LOGGING_OUT);
+    } else if (strstr(json, "authorizationStateClosed")) {
+        emit_auth(rt, TGF_AUTH_CLOSING);
     }
 }

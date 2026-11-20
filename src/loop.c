@@ -84,7 +84,7 @@ void loop_tick(Runtime *rt, void *client, LoopState *ls, tgf_tick_cb cb, void *u
         }
     }
     if (cb) cb(rt, ud);
-    process_fwd_queue(rt, client);
+    if (!ls->paused) process_fwd_queue(rt, client);
     { time_t now = time(NULL);
       if (now - ls->last_prune >= 1200) { history_store_prune(&rt->history, &rt->cfg); ls->last_prune = now; } }
 }
