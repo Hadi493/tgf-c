@@ -40,16 +40,19 @@ previous binary as `nob.old`.
 5. Compile everything into `./tgf` in one `cc` invocation:
 
 ```
-cJSON.c -O3 -o tgf src/tracker.c src/history.c src/forward.c src/config.c src/main.c src/auth.c src/resolve.c src/poll.c src/transport.c src/ui.c
+cJSON.c -O3 -o tgf src/tracker.c src/history.c src/forward.c src/config.c src/main.c src/loop.c src/auth.c src/resolve.c src/poll.c src/transport.c src/transport_tdlib.c src/ui.c
 ```
 
-   (`nob.c:220-235`). `-O3` is unconditional; there is no debug/profile target.
-6. Targets: `test` builds and runs `tests/tgf_tests` (`nob.c:80-97`,
-   `166-173`); `sanitize` builds the full `tgf` with `-g -O1
-   -fno-omit-frame-pointer -fsanitize=address,undefined` (`nob.c:99-155`,
-   `175-182`); `clean` removes build artifacts. Both `test` and `sanitize`
-   are POSIX-only (Windows exits 1 with a message). There is no `run`,
-   `install`, or `format`.
+   (`nob.c:285-307`). `-O3` is unconditional; there is no debug/profile target.
+6. Targets: `test` builds and runs `tests/tgf_tests` then `tests/tgf_e2e`
+   (`nob.c:80-118`, `210-217`); `e2e` runs just the fake-transport end-to-end
+   binary (`nob.c:99-118`, `220-226`); `sanitize`/`asan` build the full `tgf`
+   with `-g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined`
+   (`nob.c:141-197`, `229-244`); `tsan` builds and runs the e2e under
+   `-fsanitize=thread` (`nob.c:120-139`, `247-253`); `gui` builds `tgf-gui`
+   using `pkg-config --cflags --libs gtk4 libadwaita-1`; `run-gui` builds and
+   executes `tgf-gui`; `clean` removes build artifacts including `tgf-gui`.
+   `test`/`e2e`/`sanitize`/`asan`/`tsan`/`gui`/`run-gui` are POSIX-only.
 
 ## 4. TDLib discovery and build (Unix)
 
@@ -90,7 +93,7 @@ location; moving `tgf` without `lib/td/build` breaks it.
 
 ## 5. Windows
 
-- `-DTGF_NOGUI` removes all ncurses code (`src/ui.c:29-89`, `src/main.c:134-148`).
+- `-DTGF_NOGUI` removes all ncurses code (`src/ui.c:29-89`, `src/loop.c:86-97`).
 - No `-lncurses`, no rpath.
 - If `tdjson.dll` or `tdjson.lib` exists in the working directory, link
   `-ltdjson`; otherwise perform the same ensure/build sequence and add
@@ -133,12 +136,19 @@ Tests (Step 0 of spec 99):
 ```
 
 Builds `tests/tgf_tests` with `-g -O1 -fno-omit-frame-pointer
--fsanitize=address,undefined` and runs it in a temporary working directory. It
-links `tests/test_main.c`, `src/tracker.c`, `src/history.c`, `src/forward.c`,
-`src/config.c`, `src/resolve.c`, `src/poll.c`, and `cJSON.c` with stubbed
-`transport_send`/`transport_destroy`/`ui_status`/`ui_oom`/`ui_forwarded`;
-it does not require TDLib, ncurses, or a session (config files are written by
-the tests).
+-fsanitize=address,undefined` and runs it in a temporary working directory
+(`mkdtemp`+`chdir`). It links `tests/test_main.c`, `src/tracker.c`,
+`src/history.c`, `src/forward.c`, `src/config.c`, `src/resolve.c`, `src/poll.c`,
+and `cJSON.c` with stubbed `transport_send`/`transport_destroy`/`ui_status`/
+`ui_oom`/`ui_forwarded`; it does not require TDLib, ncurses, or a session.
+
+`test` then builds and runs `tests/tgf_e2e` (also ASan+UBSan, `TGF_NOGUI`,
+temp CWD): the real `loop_tick` + real `transport_send` driven by a fake
+`Transport` (`tests/transport_fake.c`) that replays scripted JSON responses and
+records sends. Links `tests/test_e2e.c`, `tests/transport_fake.c`, `src/loop.c`,
+`src/transport.c`, `src/auth.c`, `src/resolve.c`, `src/poll.c`, `src/tracker.c`,
+`src/history.c`, `src/forward.c`, `src/config.c`, `cJSON.c`. No TDLib needed.
+`./nob tsan` runs the same e2e under ThreadSanitizer.
 
 Lint (from `AGENTS.md`; compiles `src/main.c` only):
 
@@ -161,7 +171,9 @@ warnings in those files are only visible from `./nob`. Baseline status:
 - `cc -Wall -Wextra -Wshadow -Wpedantic -fsanitize=address -I. -Isrc -c src/main.c`
   (with the TDLib include paths) is clean.
 - `./nob` build passes.
-- `./nob test` passes 76 tests / 308 checks under ASan+UBSan.
+- `./nob test` passes 76 handler tests / 308 checks plus 5 fake-transport e2e
+  tests / 17 checks under ASan+UBSan; `./nob tsan` runs the e2e clean under
+  ThreadSanitizer.
 - cppcheck (with `nob.h:` filtered, as in `AGENTS.md`) reports 2 errors in
   vendored `cJSON.c` (`invalidFunctionArg`, lines 113 and 415) and 16 warnings,
   also in `cJSON.c` (unchanged baseline). In `src/` it reports style-level
@@ -213,3 +225,4 @@ built from the pinned submodule when no system lib is present (slow, `-j1`).
 | 2026-11-17 | Corrected `tgf.c` citations and the test count to the working tree |
 | 2026-11-17 | Step 2: split sources into `src/`; updated build/lint/test commands |
 | 2026-11-19 | Documented `sanitize` target and CI workflow; fixed the narrow lint command (added `-I.`); test suite now links `src/resolve.c` (42 tests / 175 checks); recorded the current cppcheck baseline including src style findings; refreshed nob.c citations |
+| 2026-11-21 | Added `gui` and `run-gui` targets to `./nob` specification using `pkg-config` for `gtk4` and `libadwaita-1` |

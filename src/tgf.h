@@ -9,6 +9,7 @@
 
 #include "cJSON.h"
 #include "config.h"
+#include "transport.h"
 
 #define POLL_INTERVAL 5
 #define MSG_LIMIT     10000
@@ -122,6 +123,7 @@ static inline const char *cJSON_GetStr(const cJSON *obj, const char *key) {
 
 typedef struct {
     Config cfg;
+    const Transport *tp;
 
     int       authorized;
     int       dest_resolved;

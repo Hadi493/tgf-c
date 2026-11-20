@@ -1,10 +1,9 @@
 #include "tgf.h"
 
-#define TD_JSON_CLIENT_HEADER <td/telegram/td_json_client.h>
-#include TD_JSON_CLIENT_HEADER
-
+/* TDLib-free JSON request builder. Routes through the active transport vtable
+ * (rt->tp), so the real app and the offline fake share this exact code path.
+ * rt->tp must be set by the caller (main sets transport_tdlib; tests set fake). */
 void transport_send(Runtime *rt, void *client, const char *type, const char *payload, RequestId id) {
-    (void)rt;
     char extra_buf[64];
     const char *extra = request_extra(id, extra_buf, sizeof(extra_buf));
     char buf[8192];
@@ -21,9 +20,5 @@ void transport_send(Runtime *rt, void *client, const char *type, const char *pay
             n = snprintf(buf, sizeof(buf), "{\"@type\":\"%s\"}", type);
     }
     if (n >= (int)sizeof(buf)) { ui_status("WARNING: request truncated"); return; }
-    td_json_client_send(client, buf);
-}
-
-void transport_destroy(void *client) {
-    td_json_client_destroy(client);
+    rt->tp->send(client, buf);
 }

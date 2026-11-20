@@ -17,7 +17,7 @@ static void clean(void)
     cmd_run(&rm);
 #else
     Cmd rm = {0};
-    cmd_append(&rm, "rm", "-rf", TD_BUILD, "tgf", TEST_BIN, "nob.old");
+    cmd_append(&rm, "rm", "-rf", TD_BUILD, "tgf", TEST_BIN, "tests/tgf_e2e", "tests/tgf_e2e_tsan", "nob.old");
     cmd_run(&rm);
 #endif
 }
@@ -96,6 +96,48 @@ static int run_tests(void)
     return cmd_run(&cmd);
 }
 
+static int run_e2e(void)
+{
+    Cmd cmd = {0};
+    nob_cc(&cmd);
+    nob_cc_flags(&cmd);
+    cmd_append(&cmd, "-g", "-O1", "-fno-omit-frame-pointer");
+    cmd_append(&cmd, "-fsanitize=address,undefined");
+    cmd_append(&cmd, "-DTGF_NOGUI");
+    cmd_append(&cmd, "-I.", "-Isrc", "-Itests");
+    nob_cc_output(&cmd, "tests/tgf_e2e");
+    cmd_append(&cmd, "tests/test_e2e.c", "tests/transport_fake.c", "src/loop.c", "src/transport.c",
+               "src/auth.c", "src/resolve.c", "src/poll.c", "src/tracker.c", "src/history.c",
+               "src/forward.c", "src/config.c", "cJSON.c");
+
+    if (!cmd_run(&cmd)) return 0;
+
+    cmd.count = 0;
+    cmd_append(&cmd, "tests/tgf_e2e");
+    return cmd_run(&cmd);
+}
+
+static int run_tsan(void)
+{
+    Cmd cmd = {0};
+    nob_cc(&cmd);
+    nob_cc_flags(&cmd);
+    cmd_append(&cmd, "-g", "-O1", "-fno-omit-frame-pointer");
+    cmd_append(&cmd, "-fsanitize=thread");
+    cmd_append(&cmd, "-DTGF_NOGUI");
+    cmd_append(&cmd, "-I.", "-Isrc", "-Itests");
+    nob_cc_output(&cmd, "tests/tgf_e2e_tsan");
+    cmd_append(&cmd, "tests/test_e2e.c", "tests/transport_fake.c", "src/loop.c", "src/transport.c",
+               "src/auth.c", "src/resolve.c", "src/poll.c", "src/tracker.c", "src/history.c",
+               "src/forward.c", "src/config.c", "cJSON.c");
+
+    if (!cmd_run(&cmd)) return 0;
+
+    cmd.count = 0;
+    cmd_append(&cmd, "tests/tgf_e2e_tsan");
+    return cmd_run(&cmd);
+}
+
 static int run_sanitize(void)
 {
     Cmd cmd = {0};
@@ -145,10 +187,12 @@ static int run_sanitize(void)
     cmd_append(&cmd, "src/forward.c");
     cmd_append(&cmd, "src/config.c");
     cmd_append(&cmd, "src/main.c");
+    cmd_append(&cmd, "src/loop.c");
     cmd_append(&cmd, "src/auth.c");
     cmd_append(&cmd, "src/resolve.c");
     cmd_append(&cmd, "src/poll.c");
     cmd_append(&cmd, "src/transport.c");
+    cmd_append(&cmd, "src/transport_tdlib.c");
     cmd_append(&cmd, "src/ui.c");
 
     return cmd_run(&cmd);
@@ -168,7 +212,17 @@ int main(int argc, char **argv)
         nob_log(NOB_ERROR, "test target is not supported on Windows yet");
         return 1;
 #else
-        return run_tests() ? 0 : 1;
+        if (!run_tests()) return 1;
+        return run_e2e() ? 0 : 1;
+#endif
+    }
+
+    if (argc > 1 && strcmp(argv[1], "e2e") == 0) {
+#ifdef _WIN32
+        nob_log(NOB_ERROR, "e2e target is not supported on Windows yet");
+        return 1;
+#else
+        return run_e2e() ? 0 : 1;
 #endif
     }
 
@@ -178,6 +232,24 @@ int main(int argc, char **argv)
         return 1;
 #else
         return run_sanitize() ? 0 : 1;
+#endif
+    }
+
+    if (argc > 1 && strcmp(argv[1], "asan") == 0) {
+#ifdef _WIN32
+        nob_log(NOB_ERROR, "asan target is not supported on Windows yet");
+        return 1;
+#else
+        return run_sanitize() ? 0 : 1;
+#endif
+    }
+
+    if (argc > 1 && strcmp(argv[1], "tsan") == 0) {
+#ifdef _WIN32
+        nob_log(NOB_ERROR, "tsan target is not supported on Windows yet");
+        return 1;
+#else
+        return run_tsan() ? 0 : 1;
 #endif
     }
 
@@ -226,10 +298,12 @@ int main(int argc, char **argv)
     cmd_append(&cmd, "src/forward.c");
     cmd_append(&cmd, "src/config.c");
     cmd_append(&cmd, "src/main.c");
+    cmd_append(&cmd, "src/loop.c");
     cmd_append(&cmd, "src/auth.c");
     cmd_append(&cmd, "src/resolve.c");
     cmd_append(&cmd, "src/poll.c");
     cmd_append(&cmd, "src/transport.c");
+    cmd_append(&cmd, "src/transport_tdlib.c");
     cmd_append(&cmd, "src/ui.c");
 
     if (!cmd_run(&cmd)) return 1;

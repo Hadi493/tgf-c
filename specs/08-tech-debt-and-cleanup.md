@@ -60,7 +60,7 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
   leaves holes until the next successful prune (reported via `ui_oom`).
 
 #### TD-05 — Failed resolution is invisible and permanent — **ADDRESSED in Step 4.1**
-- **Evidence:** `src/main.c:23-74` (no retry), `src/main.c:127` (gate just stays
+- **Evidence:** `src/loop.c:8-59` (no retry), `src/loop.c:79` (gate just stays
   false), `src/ui.c:59` (literal `ACTIVE`).
 - **Impact:** a typo in `dest_channel` yields one ≤1 s status line and a
   process that looks healthy forever. Same for an all-failed source set.
@@ -89,7 +89,7 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
   budget.
 
 #### TD-07 — Source resolution failures are silent beyond one line — **ADDRESSED in Step 4.1**
-- **Evidence:** `src/main.c:58-74`; failed sources keep `chat_id = 0` and are
+- **Evidence:** `src/loop.c:43-59`; failed sources keep `chat_id = 0` and are
   skipped by `src/poll.c:9-10`.
 - **Impact:** operator cannot tell which sources are dead; no retry; no summary.
 - **Fix gate:** decide fail-fast vs. degrade-with-warning; amend 01 §4.
@@ -97,7 +97,7 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 
 #### TD-08 — Auth failures are not handled
 - **Evidence:** `src/auth.c:18-72` handles only four states; `on_error` only
-  prints (`src/main.c:58-74`).
+  prints (`src/loop.c:43-59`).
 - **Impact:** wrong code/password, QR login, or device confirmation leaves the
   process idle with no retry or guidance.
 - **Fix gate:** re-prompt/abort policy; amend 01 §2.
@@ -105,7 +105,7 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 #### TD-09 — Fixed caps and silent truncation — **PARTIALLY ADDRESSED (Step 4.5)**
 - **Evidence:** `MAX_SEQ_TRACKER 128` (`src/tgf.h:16`), `MAX_FWD_IDS 256`
   (`src/tgf.h:33`), reply/album arrays 256 (`src/forward.c`), 8 KiB request
-  buffer (`src/transport.c:10`), 10k page with no pagination in live mode
+  buffer (`src/transport.c:9`), 10k page with no pagination in live mode
   (`src/tgf.h:14`, `src/poll.c:13-14`), `num_sources` unbounded.
 - **Resolution:** album grouping splits >256-member albums into multiple
   ascending jobs (stack overflow fixed, no loss); `transport_send` no longer
@@ -130,7 +130,7 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 
 #### TD-12 — Errors are strings; reporting policy is ad hoc
 - **Evidence:** every failure is `ui_status("…")`; exits mix `fprintf` and
-  silent returns (`src/config.c:9-80`, `src/main.c:154-170`); one-slot `status_msg`
+  silent returns (`src/config.c:9-80`, `src/main.c:53-69`); one-slot `status_msg`
   (`src/tgf.h:150`, `src/ui.c:104-108`).
 - **Impact:** no error taxonomy, no counters, no reliable operator feedback,
   lost messages between refreshes.
@@ -266,7 +266,7 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 #### TD-24 — Dead and vestigial code — **PARTIALLY ADDRESSED**
 - **Evidence (remaining):** `last_msg_id`/`last_date` written, never read
   (`src/tracker.c:33-52`); `config_free` (`src/config.c:82-92`) used only by
-  tests while production frees the same fields by hand (`src/main.c:164-168`);
+  tests while production frees the same fields by hand (`src/main.c:63-67`);
   vestigial `(void)msg_id; (void)date;` in `tracker_store_set`
   (`src/tracker.c:34`).
 - **Removed:** `pending_req`, the `on_update` auth path, the unreachable
@@ -277,13 +277,13 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
 
 #### TD-26 — Blocking auth input and signal handling quality
 - **Evidence:** `fgets` inside handlers (`src/auth.c:35-58`); `signal()` not
-  `sigaction` (`src/main.c:102-103`); up to 1 s shutdown latency.
+  `sigaction` (`src/main.c:46-47`); up to 1 s shutdown latency.
 - **Impact:** no cancellation, slow shutdown, prompt can outlive SIGINT.
 - **Structural fix:** input step decoupled from the receive loop; signal-safe
   flag; same user-visible prompts.
 
 #### TD-28 — CWD-relative, hardcoded paths
-- **Evidence:** `config.json` (`src/main.c:89`), `tdlib_db`/`tdlib_files`
+- **Evidence:** `config.json` (`src/main.c:33`), `tdlib_db`/`tdlib_files`
   (`src/auth.c:24-25`), `seq_tracker.txt` (`src/tracker.c:4`), default
   `history.txt` (`src/config.c:46`).
 - **Impact:** running from another directory creates a second profile; no
@@ -334,7 +334,7 @@ the step is too large.
 3. **Done:** storage interfaces `history_store_*` (`load/add/has/prune`) and
    `tracker_store_*` (`load/save/get/set/pending`) with today’s formats.
 4. **Done:** transport `transport_send(rt, client, type, payload, RequestId)`
-   plus a handler registry (`handler_for`, `src/main.c:39-49`); `request_extra`
+   plus a handler registry (`handler_for`, `src/loop.c:24-33`); `request_extra`
    translates `RequestId` back into the exact `@extra` strings on the wire
    (`src/tgf.h:93-108`). `transport_destroy` wraps client shutdown.
 5. **Done:** pure grouping `group_batch(msgs, count, order) -> GroupResult`,

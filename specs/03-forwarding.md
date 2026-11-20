@@ -160,7 +160,7 @@ next dispatch waits for the response or the timeout. With
 tick frequency and response latency. Albums and reply chains count as one job
 and therefore one delay unit.
 
-`transport_send` formats the request into an 8 KiB buffer (`src/transport.c:6-25`). If the
+`transport_send` formats the request into an 8 KiB buffer (`src/transport.c:6-24`). If the
 formatted request would exceed it, it calls `ui_status("WARNING: request
 truncated")` and **does not send** (TD-09 addressed). The in-flight job then
 hits the 60 s timeout and takes the retry path (§7). Current maximum id string
@@ -169,7 +169,7 @@ size (~256 × 20 chars) fits, so this guard is not reached in practice.
 ## 6. Response handling
 
 All `forwardMessages` errors arrive as `@type == "error"` and are routed to
-`on_error`, not `on_response` (`src/main.c:118-119`). `on_error` prints:
+`on_error`, not `on_response` (`src/loop.c:71-72`). `on_error` prints:
 
 ```
 ERROR [fwd_<...>] code=<n>: <message>
@@ -181,7 +181,7 @@ via `ui_status`, then calls `forward_error_handle(rt, id, code, message)`
 Success (`forward_handle`, `src/forward.c:237-249`):
 
 - the source chat id arrives in the typed `RequestId` decoded from the extra
-  (`src/main.c:28-32`); single-id tags use `fwd_<chat>_<id>`, batch tags
+  (`src/loop.c:12-16`); single-id tags use `fwd_<chat>_<id>`, batch tags
   `fwd_<chat>_batch`;
 - set `src_name` to the matching configured `source_channels` entry;
 - `ui_forwarded`: in `-d` mode print ` FORWARDED from <src_name> → <dest_channel>`;
@@ -241,7 +241,7 @@ success. Un-marking the dedupe entry on failure is deliberately **not** done
 |---|---|---|
 | Ids per job | 256 (`MAX_FWD_IDS`) | albums split into ≤256-id jobs (no overflow); excess reply children marked but not forwarded (residual) |
 | Reply chain depth | 1 | grandparents omitted |
-| Request buffer | 8 KiB (`src/transport.c:10`) | truncated JSON still sent |
+| Request buffer | 8 KiB (`src/transport.c:9`) | truncated JSON still sent |
 | Id string buffer | 8 KiB (`src/forward.c:216`) | truncated id list |
 | Payload buffer | 16 KiB (`src/forward.c:221`) | truncated JSON |
 | Queue capacity | unbounded growth | ring buffer doubles from 1024; ~48 B + 8 B/id per job |

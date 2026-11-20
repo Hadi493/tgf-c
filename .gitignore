@@ -2,6 +2,8 @@
 nob
 tgf
 tests/tgf_tests
+tests/tgf_e2e
+tests/tgf_e2e_tsan
 config.json
 *.txt
 *.bak

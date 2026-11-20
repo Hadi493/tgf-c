@@ -5,7 +5,7 @@ Status: baseline · Owner: `src/config.c` (`config_load`), `src/history.c`, `src
 ## 1. Location rules
 
 - `config.json` is opened at the **hardcoded path** `config.json` in the
-  process CWD (`src/main.c:89`). There is no flag or environment override.
+  process CWD (`src/main.c:33`). There is no flag or environment override.
 - `tdlib_db/` and `tdlib_files/` are hardcoded relative paths passed to TDLib
   (`src/auth.c:24-25`).
 - `history_file` defaults to `history.txt`; a relative value is resolved
@@ -30,6 +30,7 @@ Loaded by `config_load` (`src/config.c:9-80`) with cJSON. All keys are looked up
 | `api_hash` | string | yes | — | `cJSON_IsString` | `Missing api_hash`, exit 1 |
 | `dest_channel` | string | yes | — | `cJSON_IsString` | `Missing dest_channel`, exit 1 |
 | `source_channels` | array of strings | yes | — | `cJSON_IsArray` | `Missing source_channels array`, exit 1 |
+| `disabled_channels` | array of strings | no | `[]` | `cJSON_IsArray` | non-array → empty array, silently; channels in this list are skipped during polling |
 | `history_file` | string | no | `history.txt` | none | non-string → default, silently |
 | `forward_delay_sec` | number | no | `1` | none | non-number → default, silently |
 | `history_window_hours` | number | no | `24` | none | non-number → default, silently |
@@ -132,7 +133,7 @@ Example: `-1001394595107_46548385792 1794488266`.
 - `backfill_done`: 0/1.
 - Written through `seq_tracker.txt.tmp` + `rename` (`src/tracker.c:24-31`).
 - Pending buffers are **not** persisted.
-- Only loaded when sequential mode is enabled (`src/main.c:101`).
+- Only loaded when sequential mode is enabled (`src/main.c:45`).
 - Missing/corrupt file → empty tracker; a line with 3 fields is accepted with
   `scan_from=0, backfill_done=0`.
 
@@ -269,4 +270,5 @@ migration are TDLib’s concern. Deleting `tdlib_db/` forces a new login.
 | 2026-11-19 | SC-05-01 expectation corrected to observed behavior: placeholder credentials pass local config validation; TDLib proceeds to the phone prompt |
 | 2026-11-19 | Step 4.4a: new §5 durable forward queue (fwd_queue.txt); history prune rewrite is tmp+rename (TD-27); TD-03 addressed; sections renumbered 5-8 → 6-9; SC-05-06 updated, SC-05-08 added |
 | 2026-11-19 | Step 4.4b: new §4.3 pending journal (seq_pending.txt); TD-02 addressed; SC-05-09 added |
+| 2026-11-21 | Added optional `disabled_channels` array to schema for GUI per-source enable/disable |
 | 2026-11-19 | Step 4.6: new enable_ordering key (ordering without backfill); TD-14 addressed |

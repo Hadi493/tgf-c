@@ -32,17 +32,17 @@ formats stay compatible; C11 only; no GUI toolkit or new dependency in the core;
 
 | # | Prompt or spec 09 claims | Reality at `b1f5b65` | Evidence |
 |---|---|---|---|
-| D1 | "`tgf.h` declares ~30 `extern` globals (`api_id`, `api_hash`, `source_channels`, `fwd_queue`, `seq_tracker[]`, `pending_req`, `keep_running`, `status_msg[256]`)" | **Zero `extern` globals.** `grep -rn extern src/` is empty. All state lives in one `Runtime` struct, held as `static Runtime rt` in `main.c`. `pending_req` was removed in Step 3. | `src/tgf.h:123-151`, `src/main.c:9-13`; 08 TD-10 already notes "the current header has no `extern`s" |
-| D2 | "no context struct, no init or shutdown" | `Runtime` **is** the context struct; `main()` performs init and shutdown inline. What is missing is a *reusable, opaque, thread-safe API* around it — not the struct. | `src/main.c:80-171` |
+| D1 | "`tgf.h` declares ~30 `extern` globals (`api_id`, `api_hash`, `source_channels`, `fwd_queue`, `seq_tracker[]`, `pending_req`, `keep_running`, `status_msg[256]`)" | **Zero `extern` globals.** `grep -rn extern src/` is empty. All state lives in one `Runtime` struct, held as `static Runtime rt` in `main.c`. `pending_req` was removed in Step 3. | `src/tgf.h:123-151`, `src/main.c:8-13`; 08 TD-10 already notes "the current header has no `extern`s" |
+| D2 | "no context struct, no init or shutdown" | `Runtime` **is** the context struct; `main()` performs init and shutdown inline. What is missing is a *reusable, opaque, thread-safe API* around it — not the struct. | `src/main.c:24-70` |
 | D3 | "Read `tgf.c`" / 09 §3.2 "existing code is built around `tgf.c`, `forward.c`, `history.c`, `tracker.c`" | No `tgf.c`. The monolith was split into `src/main.c`, `auth.c`, `resolve.c`, `poll.c`, `transport.c`, `ui.c`, `config.c`, `tracker.c`, `history.c`, `forward.c`. | `ls src/`; 00 §4 module table |
 | D4 | Phase 3 "move globals into `tgf_ctx` … delete the `extern` globals from `tgf.h`; a grep should find nothing" | Already nothing to delete. The real Phase 3 work is wrapping `Runtime` in an opaque public `tgf_ctx`, adding threads/events/commands, and moving the `ui.c` file-statics into a consumer. | D1; `src/ui.c:12-91` |
 | D5 | Phase 1 "add a `./nob test` target" | Exists: 76 tests / 308 checks, ASan+UBSan, link-time stubs. | `nob.c:80-97`, `tests/test_main.c` |
-| D6 | Phase 1 "put TDLib behind a transport interface (struct of function pointers create/send/receive/execute/destroy)" | **Partial.** Only `transport_send`/`transport_destroy` are wrapped (plain functions, not a vtable). `td_json_client_create`/`receive`/`destroy` are called directly in `main.c`. No `execute` wrapper. No fake transport. | `src/transport.c:6-29`, `src/main.c:92,109,169` |
+| D6 | Phase 1 "put TDLib behind a transport interface (struct of function pointers create/send/receive/execute/destroy)" | **Partial.** Only `transport_send`/`transport_destroy` are wrapped (plain functions, not a vtable). `td_json_client_create`/`receive`/`destroy` are called directly in `main.c`. No `execute` wrapper. No fake transport. | `src/transport.c:6-24`, `src/main.c:92,109,169` |
 | D7 | Phase 1 "fake transport that replays scripted JSON updates … one end-to-end run" | Tests stub `transport_send`/`destroy` and call handlers directly with crafted `cJSON`. There is **no scripted `receive` replay and no loop-level end-to-end test**. `captured_*` records only the last send. | `tests/test_main.c:12-67` |
 | D8 | Phase 1 "add `./nob asan` and `./nob tsan`" | `./nob sanitize` exists (ASan+UBSan, full binary). No `asan`/`tsan` named targets; **no ThreadSanitizer anywhere**. No `libtgf.a` target. | `nob.c:99-155,161-182` |
 | D9 | 09 §6 / GUI-050/051 config save atomic, 0600, preserve unknown keys | `config.c` is **load-only**. Unknown keys are dropped (`cJSON_Delete(root)` after extracting known fields). No save, no `fsync`/`rename`, no mode setting. | `src/config.c:9-80` |
-| D10 | 09 §3.3/3.4 events + commands; GUI-010 TUI reads only events | No event/command API. Feedback is a one-slot `status_msg[256]` + a `Ui` vtable driven by explicit `ui_refresh(dest, src_name, count, delay)` calls; the dashboard reads `ui_rt->status_msg` directly (a private data path). | `src/ui.c:64-66,104-123`, `src/main.c:134-148` |
-| D11 | 09 §3.1 three thread kinds; GUI-002 UI must not block on core | **One app thread.** `td_json_client_receive(client, 1.0)` blocks ≤1 s; all logic runs in that loop. Auth uses blocking `fgets(stdin)` inside the handler, stalling the loop. `keep_running` is `volatile bool`, not atomic. TDLib has its own internal threads. | `src/main.c:108-152`, `src/auth.c:35-58`, `src/tgf.h:148` |
+| D10 | 09 §3.3/3.4 events + commands; GUI-010 TUI reads only events | No event/command API. Feedback is a one-slot `status_msg[256]` + a `Ui` vtable driven by explicit `ui_refresh(dest, src_name, count, delay)` calls; the dashboard reads `ui_rt->status_msg` directly (a private data path). | `src/ui.c:64-66,104-123`, `src/loop.c:86-97` |
+| D11 | 09 §3.1 three thread kinds; GUI-002 UI must not block on core | **One app thread.** `td_json_client_receive(client, 1.0)` blocks ≤1 s; all logic runs in that loop. Auth uses blocking `fgets(stdin)` inside the handler, stalling the loop. `keep_running` is `volatile bool`, not atomic. TDLib has its own internal threads. | `src/loop.c:61-102`, `src/auth.c:35-58`, `src/tgf.h:148` |
 | D12 | 09 §12 item 8 / GUI-074 instance lock on `tdlib_db/` "may already exist" | No app-level lock. TDLib locks `db.sqlite` internally; a second client on the same dir fails/corrupts ungracefully (observed in a prior session). No clean detection or message. | `src/auth.c:24` (`database_directory:"tdlib_db"`); no lock file in tree |
 | D13 | specs `06-tui.md`, `08-tech-debt`, `09-gui.md` referenced by the prompt | These exist but are **uncommitted**: `06-ui-and-cli.md`→`06-tui.md` (pure rename), `99-tech-debt`→`08-tech-debt` (renamed **and edited**), new `09-gui.md` (blind draft) + `TGF GUI.html` mockup. `specs/README.md` and `AGENTS.md` still point at the **old** names. | `git status`; `diff` old99 vs 08; README:12,31,33,55; AGENTS:17,41,43,51,145 |
 | D14 | 09 is authoritative for GUI requirements | 09 header: "Written without access to specs 00-08 … inferred from the README and file names." Its §3.2 (`tgf.c`) and §14 open questions are factually wrong/answerable now. It is a useful requirements source (event/command lists, GUI-nnn IDs) but must be reconciled, not trusted as-built. | `specs/09-gui.md:7-9,80,342-349` |
@@ -59,7 +59,7 @@ decisions (Phase 5). The plan below is re-scoped onto that reality.
 
 ### 3.1 State ownership
 
-One `static Runtime rt` (`src/main.c:9-13`) owns everything. `Runtime` (`src/tgf.h:123-151`)
+One `static Runtime rt` (`src/main.c:8-13`) owns everything. `Runtime` (`src/tgf.h:123-151`)
 contains `Config cfg` plus liveness, resolution, history, tracker, forward queue/in-flight,
 and UI fields. **No module except `main.c` and `ui.c` has file-scope mutable state**
 (`grep '^static' src/*.c`): `group_batch` is pure; history/tracker/forward/config/resolve/
@@ -88,7 +88,7 @@ response confirms / error retries or drops. Dedupe mark happens **before** send 
 
 ### 3.3 Threading reality
 
-- **One application thread.** The loop (`src/main.c:108-152`) calls
+- **One application thread.** The loop (`src/loop.c:61-102`) calls
   `td_json_client_receive(client, 1.0)` (blocks ≤1 s), dispatches by `@type`/`@extra`,
   then runs periodic tasks by `time(NULL)` deltas: poll every 5 s, dashboard 1 Hz,
   `process_fwd_queue` every tick, prune every 1200 s.
@@ -98,14 +98,14 @@ response confirms / error retries or drops. Dedupe mark happens **before** send 
 - **Auth blocks the loop**: `fgets(stdin)` for phone/code/2FA inside `auth_handle`
   (`src/auth.c:35-58`). No tick happens while waiting. Prompts use `printf` directly.
 - No callbacks; request/response matched only by the `@extra` tag (`request_extra`,
-  `src/tgf.h:93-108`; decoder `request_id_from_extra`, `src/main.c:23-36`, exact tags
+  `src/tgf.h:93-108`; decoder `request_id_from_extra`, `src/loop.c:8-21`, exact tags
   before prefixes).
 
 ### 3.4 Transport seam (partial)
 
 `transport_send(Runtime*, void *client, type, payload, RequestId)` builds the JSON into an
 8 KiB buffer, warns + drops on overflow, calls `td_json_client_send`
-(`src/transport.c:6-25`). `transport_destroy` wraps `td_json_client_destroy`.
+(`src/transport.c:6-24`). `transport_destroy` wraps `td_json_client_destroy`.
 `create`/`receive`/`execute` are **not** behind the seam. Tests substitute `transport_send`/
 `destroy` at link time (`tests/test_main.c:55-67`); there is no fake `receive`.
 
@@ -248,6 +248,34 @@ Coverage targets (prompt): history load/add/has/prune + duplicates; tracker save
 forward batching (albums, reply+parent, `MAX_FWD_IDS`); config defaults/missing/bad-types/
 unknown-keys; e2e asc+desc. Most handler-level cases already exist (extend, don't rebuild).
 
+### Phase 1 baseline results (recorded 2026-11-20)
+
+Implemented: full `Transport` vtable (`src/transport.h`), real impl split into
+`src/transport_tdlib.c`, TDLib-free JSON builder in `src/transport.c` (routes via
+`rt->tp`); dispatch + tick extracted from `main.c` into `src/loop.c` (`loop_tick`,
+`LoopState`); fake transport (`tests/transport_fake.c`) + loop-level e2e
+(`tests/test_e2e.c`); `./nob e2e`, `./nob asan`, `./nob tsan` targets.
+
+Observed gates:
+- `./nob` (real app, TDLib rebuilt): **clean, no warnings**; `tgf` binary produced.
+- `./nob test`: **308 handler checks + 17 e2e checks, 0 failures** (ASan+UBSan).
+  e2e covers asc, desc, dedupe-across-polls, delay gate, backfill asc — all driving
+  the real `loop_tick` + real `transport_send` through the fake.
+- `./nob tsan`: e2e **17 checks, 0 failures**, no ThreadSanitizer reports.
+- `./nob asan`: app build clean.
+- Narrow lint (`-Wall -Wextra -Wshadow -Wpedantic`) on main/loop/transport/transport_tdlib: clean.
+- cppcheck: **no new errors/warnings** vs baseline.
+- CLI validation (`./tgf badarg` → usage, exit 1): intact.
+
+**Incident (resolved):** the first `test_e2e.c` lacked the `mkdtemp`+`chdir` CWD
+isolation that `test_main.c` uses, so its `reset_state` deleted the repo's real
+`config.json`, `history.txt`, `seq_tracker.txt`, `seq_pending.txt`, `fwd_queue.txt`.
+`config.json` was restored from `config.bak` (mode 0600); `tdlib_db/` was untouched.
+The four runtime state files had no backup and are lost (bounded impact: a one-time
+re-forward of in-window messages and a backfill re-scan on next run; no message
+destruction). Fixed by adding the same temp-CWD isolation to `test_e2e.c`; re-ran
+`./nob test` and confirmed repo `config.json` survives and temp dirs are cleaned.
+
 ---
 
 ## 8. Phases 3–5 (re-scoped onto reality)
@@ -305,7 +333,7 @@ decisions; do not guess.
 - **Durable formats** (`history.txt`, `seq_tracker.txt`, `seq_pending.txt`, `fwd_queue.txt`,
   `config.json`, `tdlib_db/`) stay compatible; an existing install keeps working. No `fsync`
   regression on the existing tmp+rename writes; config save adds `fsync`+0600 (new).
-- **Fatal paths** currently `exit(1)` after `transport_destroy` (`src/main.c:66-68`). The
+- **Fatal paths** currently `exit(1)` after `transport_destroy` (`src/loop.c:51-53`). The
   core must instead return a status + error event; the *consumer* decides to exit. Preserve
   clean client destroy before any exit (no `tdlib_db` corruption).
 - **TSan + TDLib:** TDLib's internal threads may produce benign reports; scope TSan to the

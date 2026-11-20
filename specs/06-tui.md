@@ -4,7 +4,7 @@ Status: baseline · Owner: `src/ui.c`, `src/main.c` · Depends on: 00, 01
 
 ## 1. argv behavior
 
-`argv` is validated at startup (`src/main.c:81-84`): `argc` must be 1, or 2
+`argv` is validated at startup (`src/main.c:25-28`): `argc` must be 1, or 2
 with `argv[1] == "-d"`. Anything else prints `Usage: <argv0> [-d]` to stderr
 and exits **1** (TD-14 addressed).
 
@@ -14,7 +14,7 @@ and exits **1** (TD-14 addressed).
 | `./tgf -d` | no | yes | stderr |
 | anything else | — | — | `Usage: … [-d]` to stderr, exit 1 |
 
-`ui_init` (`src/main.c:90`) selects the ncurses sink when `argv[1] == NULL`,
+`ui_init` (`src/main.c:31`) selects the ncurses sink when `argv[1] == NULL`,
 else the stderr sink; debug is exactly `-d`.
 
 There is no `--help` and no config-path override. Unknown arguments are
@@ -23,7 +23,7 @@ rejected with a usage line (TD-14 addressed).
 ## 2. Output channels
 
 Both stdout and stderr are unbuffered (`setvbuf(..., _IONBF)`,
-`src/main.c:85-86`).
+`src/main.c:29-30`).
 
 | Message | Stream |
 |---|---|
@@ -63,7 +63,7 @@ after `authorized` in dashboard mode. Consequences:
 
 Initialized on the first loop iteration where `argv[1] == NULL && authorized
 && dest_resolved && source_count >= 1 && !resolve_active`
-(`src/main.c:134-148`). The full-resolution gate (Step 4.1) ensures no
+(`src/loop.c:86-97`). The full-resolution gate (Step 4.1) ensures no
 dashboard starts on any fatal resolution path:
 
 ```

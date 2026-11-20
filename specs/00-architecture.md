@@ -14,9 +14,9 @@ single-threaded CLI program backed by flat files.
 | Concern | Choice | Evidence |
 |---|---|---|
 | Language | C, compiled as one binary | `nob.c:220-235` |
-| Telegram API | TDLib JSON interface (`libtdjson`) | `src/transport.c:3-4`, `src/main.c:92-94` |
+| Telegram API | TDLib JSON interface (`libtdjson`) | `src/transport_tdlib.c:3-4`, `src/main.c:36-38` |
 | JSON | vendored cJSON | `src/tgf.h:10`, `cJSON.c` |
-| Terminal UI | ncurses, disabled with `TGF_NOGUI` or any argv | `src/ui.c:29-89`, `src/main.c:134-148` |
+| Terminal UI | ncurses, disabled with `TGF_NOGUI` or any argv | `src/ui.c:29-89`, `src/loop.c:86-97` |
 | Build | `nob` (self-rebuilding C build script) | `nob.c` |
 | Storage | `config.json`, `history.txt`, `seq_tracker.txt`, `tdlib_db/` | 05 |
 | Tests / CI | `./nob test` (POSIX) + GitHub Actions (`.github/workflows/ci.yml`) | `nob.c:80-97`, TD-17 |
@@ -60,15 +60,17 @@ TDLib is pinned as a git submodule at `v1.8.0-10143-ga17f87c4c`
 
 | File | Lines | Responsibility | Owns state |
 |---|---|---|---|
-| `src/main.c` | 164 | main loop, dispatch, shutdown, config adapter | static `Runtime` (`cfg`, dedupe, tracker, queue, status) |
+| `src/main.c` | 70 | entry, setup, shutdown, config adapter | static `Runtime` (`cfg`, dedupe, tracker, queue, status) |
+| `src/loop.c` | 102 | response dispatch + one loop tick (`loop_tick`) | — |
 | `src/auth.c` | 72 | auth state machine + prompts | — |
 | `src/resolve.c` | 59 | destination/source resolution | — |
 | `src/poll.c` | 150 | poll request + history handler | — |
-| `src/transport.c` | 29 | TDLib JSON send | — |
+| `src/transport.c` | 24 | JSON request builder (routes via `rt->tp`) | — |
+| `src/transport_tdlib.c` | 18 | real TDLib `Transport` vtable + `transport_destroy` | — |
 | `src/ui.c` | 130 | status sink + dashboard | `ui_rt`, ncurses |
 | `src/config.c` | 89 | `config.json` parsing and defaults | `Config` values only |
 | `src/config.h` | 20 | `Config` struct, `config_load`, `config_free` | — |
-| `src/tgf.h` | 204 | shared types, constants, `Runtime` struct, declarations | — |
+| `src/tgf.h` | 217 | shared types, constants, `Runtime` struct (incl. `tp`), declarations | — |
 | `src/tracker.c` | 139 | sequential scan state + in-memory pending buffer | `seq_tracker[]` |
 | `src/history.c` | 127 | dedupe hash set, persistence, pruning | `history_set`, `history_time` |
 | `src/forward.c` | 164 | grouping, forward queue, forward response | `fwd_queue` |
@@ -79,13 +81,15 @@ TDLib is pinned as a git submodule at `v1.8.0-10143-ga17f87c4c`
 `src/resolve.c` are unit-tested by `tests/test_main.c` with stubbed
 `transport_send`/`transport_destroy`/`ui_status`/`ui_oom`/`ui_forwarded`.
 `group_batch` is pure (no `Runtime`). Only `src/ui.c` keeps a file-scope
-`Runtime *` (`ui_rt`) for the status slot and `atexit` cleanup.
+`Runtime *` (`ui_rt`) for the status slot and `atexit` cleanup. `src/loop.c`
+and the real `transport_send` are exercised offline by `tests/test_e2e.c`
+through a fake `Transport` (10 §7).
 
 ## 5. Execution model
 
-- **One thread.** All TDLib traffic is the blocking JSON client:
-  `td_json_client_send` and `td_json_client_receive(client, 1.0)`
-  (`src/transport.c:6-29`, `src/main.c:109`).
+- **One thread.** All TDLib traffic goes through the `Transport` vtable
+  (`rt->tp`): `send` and `receive(client, 1.0)` (`src/transport.c:6-24`,
+  `src/loop.c:62`), backed by `td_json_client_*` (`src/transport_tdlib.c`).
 - **One tick ≈ 1 s.** `receive` blocks up to one second, so every periodic task
   is scheduled by comparing `time(NULL)` deltas in the loop.
 - **No callbacks.** Responses are matched to requests only by the `@extra`
@@ -94,12 +98,12 @@ TDLib is pinned as a git submodule at `v1.8.0-10143-ga17f87c4c`
   `resolve_dest`, `resolve_<index>`, `history_<chat_id>`, `fwd_<chat_id>_<id>`,
   `fwd_<chat_id>_batch`.
 - **Dispatch table.** `main` branches on `@type`; `on_response` decodes the
-  extra into a typed `RequestId` (`request_id_from_extra`, `src/main.c:23-36`)
-  and selects a handler via `handler_for` (`src/main.c:39-56`). Exact tags
+  extra into a typed `RequestId` (`request_id_from_extra`, `src/loop.c:8-21`)
+  and selects a handler via `handler_for` (`src/loop.c:24-41`). Exact tags
   (`resolve_dest`, `getme`) are matched before prefix tags (`resolve_`).
 - **Single parsing for responses.** `main` parses each response once and passes
   the `cJSON *root` to handlers, deleting it after the handler returns
-  (`src/main.c:111-122`). The auth handler still receives the raw string and
+  (`src/loop.c:64-76`). The auth handler still receives the raw string and
   uses `strstr` (`src/auth.c:19`).
 - **Blocking auth.** Phone/code/2FA prompts use `fgets(stdin)` inside the
   auth handler (`src/auth.c:35-58`); the loop cannot tick while waiting.
@@ -136,7 +140,7 @@ All fields live in `Runtime` (`src/tgf.h:123-151`).
 
 ### 6.3 Work and storage
 
-`static Runtime rt` (`src/main.c:9-13`) owns every field below.
+`static Runtime rt` (`src/main.c:8-13`) owns every field below.
 
 | Field | Meaning |
 |---|---|
@@ -175,7 +179,7 @@ All fields live in `Runtime` (`src/tgf.h:123-151`).
                     └────────────┘
 ```
 
-There is no enum. The `ACTIVE` gate is evaluated each tick at `src/main.c:127`.
+There is no enum. The `ACTIVE` gate is evaluated each tick at `src/loop.c:79`.
 
 ## 8. Primary data flow
 
@@ -215,7 +219,7 @@ TDLib getChatHistory response (newest first, ≤ MSG_LIMIT)
    polled.
 5. Polling starts only when `authorized && dest_resolved && source_count >= 1
    && !resolve_active`.
-6. `seq_tracker` is loaded only when sequential mode is enabled (`src/main.c:101`);
+6. `seq_tracker` is loaded only when sequential mode is enabled (`src/main.c:45`);
    the file is written only by sequential paths and `flush_pending`.
 7. Every runtime path is relative to the process CWD.
 8. The dedupe key is `<chat_id>_<message_id>` (`src/history.c:62`, `87`).
@@ -230,9 +234,9 @@ TDLib getChatHistory response (newest first, ≤ MSG_LIMIT)
 
 | Boundary | Current reality | Target for refactor |
 |---|---|---|
-| TDLib | `transport_send`/`transport_destroy` + typed `RequestId` (`src/transport.c`, `src/tgf.h:73-108`) | achieved; handler registry in `src/main.c:39-49` |
+| TDLib | `transport_send`/`transport_destroy` + typed `RequestId` (`src/transport.c`, `src/tgf.h:73-108`) | achieved; handler registry in `src/loop.c:24-33` |
 | Storage | `history_store_*` / `tracker_store_*` APIs; direct `fopen`/`rename` inside | one storage module per file (APIs exist, files not split) |
-| Config | `Config` built by `config_load`, stored as `rt.cfg` via a thin `load_config` adapter (`src/main.c:76-78`) | achieved |
+| Config | `Config` built by `config_load`, stored as `rt.cfg` via a thin `load_config` adapter (`src/main.c:20-22`) | achieved |
 | UI | `Ui` vtable (`ui_init`, stderr/ncurses impls, `src/ui.c:91-123`) | achieved; dashboard state model still open (TD-23) |
 | Domain | `group_batch` pure; queue takes `Runtime *`; clock is `time(NULL)` inside `process_fwd_queue` | injected clock (open) |
 
@@ -248,7 +252,7 @@ MUST NOT add new globals to `src/tgf.h` without a spec change (TD-10).
 - No error taxonomy: every failure is a string (TD-12).
 - No metrics, no request accounting.
 - Fixed capacities: 128 tracked chats, 256 ids per job, 8 KB request buffer,
-  10,000 messages per history page (`src/tgf.h:13-42`, `src/transport.c:10`).
+  10,000 messages per history page (`src/tgf.h:13-42`, `src/transport.c:9`).
   The forward queue itself grows dynamically (ring buffer, heap id payloads).
 
 ## 12. Acceptance scenarios
