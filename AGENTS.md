@@ -14,7 +14,7 @@ Before editing code:
    Amendment-log row.
 3. Implement against the amended spec.
 4. Run the gates in "Definition of done".
-5. Update `specs/99-tech-debt-and-cleanup.md` if the change closes or creates
+5. Update `specs/08-tech-debt-and-cleanup.md` if the change closes or creates
    an item.
 
 Rules:
@@ -26,7 +26,7 @@ Rules:
 - If code and spec disagree, stop and report the discrepancy. Do not "fix" the
   code to match your assumption, and do not silently update the spec.
 - Specs describe current behavior (as-built) unless a clause explicitly says
-  "proposed". Proposals belong in 99, not in feature specs.
+  "proposed". Proposals belong in 08, not in feature specs.
 
 ## Spec map
 
@@ -38,9 +38,11 @@ Rules:
 | 03 | `specs/03-forwarding.md` | Reply/album grouping, queue, delay, errors |
 | 04 | `specs/04-sequential-backfill.md` | Sequential mode, tracker, backfill, resume |
 | 05 | `specs/05-config-and-storage.md` | Config schema, file formats, paths, secrets |
-| 06 | `specs/06-ui-and-cli.md` | argv, streams, status channel, dashboard |
+| 06 | `specs/06-tui.md` | argv, streams, status channel, dashboard |
 | 07 | `specs/07-build-and-platform.md` | `nob` build, TDLib bootstrap, platforms |
-| 99 | `specs/99-tech-debt-and-cleanup.md` | Debt register and refactor plan |
+| 08 | `specs/08-tech-debt-and-cleanup.md` | Debt register and refactor plan |
+| 09 | `specs/09-gui.md` | GTK GUI requirements (draft) |
+| 10 | `specs/10-core-api.md` | Core library API (proposal) |
 
 `specs/README.md` is the index and change protocol.
 
@@ -48,7 +50,7 @@ Rules:
 
 1. `specs/00-architecture.md` — where state lives and how the loop runs.
 2. The owning spec for your task.
-3. `specs/99-tech-debt-and-cleanup.md` §4 — behaviors that must be preserved
+3. `specs/08-tech-debt-and-cleanup.md` §4 — behaviors that must be preserved
    even though they look like bugs.
 
 ## Build
@@ -112,7 +114,7 @@ characterization suite.
 - **static** for file-internal functions and globals.
 - **extern** in `src/tgf.h` for cross-file globals and declarations — transitional
   convention, being replaced by explicit `Runtime`/`Config` passing; after the
-  spec-99 refactor, prefer module-private state and passing `Config`/`Runtime`
+  spec-08 refactor, prefer module-private state and passing `Config`/`Runtime`
   explicitly; do not add new globals without a spec change.
 - No comments on implementation code (minimal comments only in public headers).
 - Single-line `if`/`for` bodies: no braces.
@@ -142,7 +144,7 @@ characterization suite.
 | `lib/td/` | TDLib submodule (do not edit) |
 | `specs/` | Living specifications (edit these first) |
 
-Target layout and sequencing are in `specs/99-tech-debt-and-cleanup.md` §3. Steps 1–3
+Target layout and sequencing are in `specs/08-tech-debt-and-cleanup.md` §3. Steps 1–3
 (seams, `src/` split, structural cleanups) and Step 4.1 (resolution fail-fast)
 are done; Steps 4.2–5 remain.
 
@@ -182,7 +184,7 @@ A change is done only when all of the following are true:
    acceptance scenarios were run manually and their output is summarized in
    the change description.
 5. The change does not alter behavior outside the spec clauses it touches.
-6. Any newly discovered debt or removed debt is reflected in spec 99.
+6. Any newly discovered debt or removed debt is reflected in spec 08.
 
 "This should work" is not done. Editing the file is not done. Observed output
 is done.

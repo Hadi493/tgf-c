@@ -9,7 +9,7 @@ restored Step 4.1 resolution fail-fast behavior.
 These specs describe what the program **does today**, not what it should do.
 Every statement is evidence-backed with `path:line`. Where the code is
 surprising or lossy, the spec records the behavior and points at the owning
-tech-debt item in [99-tech-debt-and-cleanup.md](99-tech-debt-and-cleanup.md).
+tech-debt item in [08-tech-debt-and-cleanup.md](08-tech-debt-and-cleanup.md).
 
 ## Why these files exist
 
@@ -28,9 +28,11 @@ behavior must land with a spec change in the same change set.
 | 03 | [03-forwarding.md](03-forwarding.md) | Reply/album grouping, queue, delay, `forwardMessages`, error path |
 | 04 | [04-sequential-backfill.md](04-sequential-backfill.md) | Sequential mode, tracker file, backfill phases, resume |
 | 05 | [05-config-and-storage.md](05-config-and-storage.md) | `config.json` schema, on-disk formats, directories, secrets |
-| 06 | [06-ui-and-cli.md](06-ui-and-cli.md) | argv, stdout/stderr, status channel, ncurses dashboard |
+| 06 | [06-tui.md](06-tui.md) | argv, stdout/stderr, status channel, ncurses dashboard |
 | 07 | [07-build-and-platform.md](07-build-and-platform.md) | `nob` build, TDLib bootstrap, platform differences |
-| 99 | [99-tech-debt-and-cleanup.md](99-tech-debt-and-cleanup.md) | Prioritized structural debt and fix sequencing |
+| 08 | [08-tech-debt-and-cleanup.md](08-tech-debt-and-cleanup.md) | Prioritized structural debt and fix sequencing |
+| 09 | [09-gui.md](09-gui.md) | GTK GUI requirements (draft; reconciled by 10) |
+| 10 | [10-core-api.md](10-core-api.md) | Core library API: opaque context, lifecycle, events, commands, threading (**Phase 0 proposal**) |
 
 `AGENTS.md` at the repository root is the entry point for agents and points
 here. `specs/acceptance.md` is the manual verification checklist derived from
@@ -52,7 +54,7 @@ the scenario tables below (60 scenarios); it is not a numbered spec.
 3. Implement.
 4. Run the build and lint gates in `AGENTS.md`; walk the scenarios the change
    touches.
-5. Update `99-tech-debt-and-cleanup.md` if the change closes or creates an item.
+5. Update `08-tech-debt-and-cleanup.md` if the change closes or creates an item.
 
 Pure refactors (no observable change) MUST NOT edit spec text. If a refactor
 needs a spec edit, it is not a refactor.
@@ -72,6 +74,6 @@ needs a spec edit, it is not a refactor.
 ## Non-goals
 
 - Documenting `cJSON`, `nob.h`, or TDLib internals. Only TGF-C's use of them.
-- Designing future features. Proposals live in 99 as debt items and need their
+- Designing future features. Proposals live in 08 as debt items and need their
   own spec when picked up.
 - Reproducing README/CONTRIBUTING prose.

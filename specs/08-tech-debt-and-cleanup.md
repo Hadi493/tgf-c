@@ -1,4 +1,4 @@
-# 99 — Technical Debt and Cleanup
+# 08 — Technical Debt and Cleanup
 
 Status: baseline register · Owner: maintainers · Depends on: 00–07
 
