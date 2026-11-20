@@ -47,11 +47,12 @@ void resolve_dest_handle(Runtime *rt, void *client, cJSON *root, RequestId id, c
 }
 
 void resolve_source_handle(Runtime *rt, void *client, cJSON *root, RequestId id, char *argv[]) {
+    (void)argv;
     long long chat_id = cJSON_GetInt64(root, "id");
     int idx = (int)id.chat_id;
     rt->source_chat_ids[idx] = chat_id;
     rt->source_count++;
-    if (argv[1] != NULL && strcmp(argv[1], "-d") == 0) {
+    if (rt->debug) {
         printf("\r  Resolving channels... %d/%d\n", rt->source_count, rt->cfg.num_sources);
     }
     fflush(stdout);

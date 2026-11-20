@@ -92,9 +92,8 @@ static void run_ticks(int n) {
     LoopState ls = {0};
     ls.last_poll = time(NULL) + 100000;
     ls.last_prune = time(NULL) + 100000;
-    char *argv[] = { "tgf", "-d", NULL };
     void *client = transport_fake.create();
-    for (int i = 0; i < n; i++) loop_tick(&rt, client, &ls, argv);
+    for (int i = 0; i < n; i++) loop_tick(&rt, client, &ls, NULL, NULL);
 }
 
 static int forwards(long long *out, int max) {

@@ -21,6 +21,23 @@ static int load_config(Runtime *r, const char *path) {
     return config_load(path, &r->cfg);
 }
 
+static int dash_inited = 0;
+static time_t dash_last = 0;
+static void dashboard_tick(Runtime *rt, void *ud) {
+    (void)ud;
+#ifndef TGF_NOGUI
+    if (!rt->authorized || !rt->dest_resolved || rt->source_count < 1 || rt->resolve_active) return;
+    if (!dash_inited) { ui_ncurses_init(); dash_inited = 1; }
+    time_t now = time(NULL);
+    if (now - dash_last >= 1) {
+        ui_refresh(rt->cfg.dest_channel, rt->src_name, rt->source_count, rt->cfg.forward_delay_sec);
+        dash_last = now;
+    }
+#else
+    (void)rt;
+#endif
+}
+
 int main(int argc, char *argv[]) {
     if (argc > 2 || (argc == 2 && strcmp(argv[1], "-d") != 0)) {
         fprintf(stderr, "Usage: %s [-d]\n", argv[0]);
@@ -29,6 +46,7 @@ int main(int argc, char *argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
     ui_init(&rt, argv[1] == NULL, argv[1] != NULL && strcmp(argv[1], "-d") == 0);
+    rt.debug = (argv[1] != NULL && strcmp(argv[1], "-d") == 0);
 
     if (load_config(&rt, "config.json") != 0) return 1;
     if (rt.cfg.num_sources == 0) { fprintf(stderr, "ERROR: No source channels configured\n"); return 1; }
@@ -48,7 +66,7 @@ int main(int argc, char *argv[]) {
     transport_send(&rt, client, "getAuthorizationState", "", (RequestId){REQ_NONE, 0, 0});
 
     LoopState ls = {0};
-    while (rt.keep_running) loop_tick(&rt, client, &ls, argv);
+    while (rt.keep_running) loop_tick(&rt, client, &ls, argv[1] == NULL ? dashboard_tick : NULL, NULL);
 
     for (int i = 0; i < rt.history.set_size; i++) free(rt.history.set[i]);
     free(rt.history.set);

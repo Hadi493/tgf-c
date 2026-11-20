@@ -133,6 +133,7 @@ typedef struct {
     int       source_count;
     int       resolve_index;
     int       resolve_active;
+    int       debug;
 
     HistoryStore history;
     TrackerStore tracker;

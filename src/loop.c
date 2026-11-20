@@ -58,7 +58,7 @@ static void on_error(Runtime *r, void *client, cJSON *root) {
     }
 }
 
-void loop_tick(Runtime *rt, void *client, LoopState *ls, char *argv[]) {
+void loop_tick(Runtime *rt, void *client, LoopState *ls, tgf_tick_cb cb, void *ud) {
     const char *result = rt->tp->receive(client, 1.0);
     if (result) {
         cJSON *root = cJSON_Parse(result);
@@ -71,7 +71,7 @@ void loop_tick(Runtime *rt, void *client, LoopState *ls, char *argv[]) {
             else if (strcmp(type, "error") == 0)
                 on_error(rt, client, root);
             else if (extra)
-                on_response(rt, client, root, extra, argv);
+                on_response(rt, client, root, extra, NULL);
             cJSON_Delete(root);
         }
     }
@@ -83,19 +83,7 @@ void loop_tick(Runtime *rt, void *client, LoopState *ls, char *argv[]) {
             poll_channels(rt, client);
         }
     }
-    if (argv[1] == NULL && rt->authorized && rt->dest_resolved && rt->source_count >= 1 && !rt->resolve_active) {
-#ifndef TGF_NOGUI
-        if (!ls->ncurses_inited) {
-            ui_ncurses_init();
-            ls->ncurses_inited = 1;
-        }
-        time_t current_time = time(NULL);
-        if (current_time - ls->last_dashboard >= 1) {
-            ui_refresh(rt->cfg.dest_channel, rt->src_name, rt->source_count, rt->cfg.forward_delay_sec);
-            ls->last_dashboard = current_time;
-        }
-#endif
-    }
+    if (cb) cb(rt, ud);
     process_fwd_queue(rt, client);
     { time_t now = time(NULL);
       if (now - ls->last_prune >= 1200) { history_store_prune(&rt->history, &rt->cfg); ls->last_prune = now; } }
