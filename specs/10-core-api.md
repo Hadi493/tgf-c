@@ -361,6 +361,31 @@ decisions; do not guess.
 
 ## Amendment log
 
+### Phase 2–4 completion (recorded 2026-11-20, commit a0991c0)
+
+Implemented and observed:
+- `core/tgf_core.h` — self-contained public API (opaque `tgf_ctx`, lifecycle,
+  `tgf_config` load/save, 10 event kinds, 11 commands, pipe `tgf_event_fd`,
+  `TGF_API_VERSION 1`). Includes only `<stdatomic.h> <stdbool.h> <stddef.h> <stdint.h>`.
+- `src/core.c` — one worker thread running `loop_tick`; mutex event + command
+  queues; non-blocking pipe wake; `atomic_bool running/paused`; config save
+  (tmp + `fsync` + `rename`, mode 0600, unknown keys preserved); all commands.
+- `auth.c` command-driven (emits `AUTH_STATE`, no `fgets` in the core);
+  `auth_submit` wipes the payload. `ui_status`/`ui_forwarded` emit events.
+- `ui.c` pure event-driven dashboard (no `Runtime` access; GUI-010).
+- `main.c` thin consumer; `nob libtgf` builds `libtgf.a`; `./nob` links it.
+- Gates: `./nob` clean; `./nob test` 308 handler + 17 e2e + 23 core checks,
+  0 failures (ASan+UBSan); `./nob tsan` clean; cppcheck no new findings;
+  30-line consumer including only `tgf_core.h` compiles/links/runs against
+  `libtgf.a`; `grep extern src/tgf.h` = 0; live run forwards telegram -> @me.
+
+Deviations / open (Phase 5 decision gate):
+- Single context per process (`s_ctx` shortcut) — fine for CLI + GUI single instance.
+- Per-source enable/disable is runtime-only (not persisted); storage format
+  (`disabled_channels` vs object entries) is still the open product decision.
+- Instance lock on `tdlib_db/` NOT implemented (still the open GUI-074 item).
+- `apply_config` re-resolves; full hot-reload semantics are Phase 5.
+
 | Date | Change |
 |---|---|
 | 2026-11-20 | Phase 0 draft created: as-built audit (§3), prompt/spec discrepancy report (§2, D1–D14), proposed API/threading/migration (§5–8), open decisions (§9), risks (§10), acceptance (§11). No code changed. |

@@ -49,10 +49,11 @@ cJSON.c -O3 -o tgf src/tracker.c src/history.c src/forward.c src/config.c src/ma
    binary (`nob.c:99-118`, `220-226`); `sanitize`/`asan` build the full `tgf`
    with `-g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined`
    (`nob.c:141-197`, `229-244`); `tsan` builds and runs the e2e under
-   `-fsanitize=thread` (`nob.c:120-139`, `247-253`); `gui` builds `tgf-gui`
+   `-fsanitize=thread` (`nob.c:120-139`, `247-253`); `libtgf` archives the core
+   objects into `libtgf.a` and `./nob` links the CLI against it; `gui` builds `tgf-gui`
    using `pkg-config --cflags --libs gtk4 libadwaita-1`; `run-gui` builds and
    executes `tgf-gui`; `clean` removes build artifacts including `tgf-gui`.
-   `test`/`e2e`/`sanitize`/`asan`/`tsan`/`gui`/`run-gui` are POSIX-only.
+   `test`/`e2e`/`sanitize`/`asan`/`tsan`/`libtgf`/`gui`/`run-gui` are POSIX-only.
 
 ## 4. TDLib discovery and build (Unix)
 
@@ -171,9 +172,9 @@ warnings in those files are only visible from `./nob`. Baseline status:
 - `cc -Wall -Wextra -Wshadow -Wpedantic -fsanitize=address -I. -Isrc -c src/main.c`
   (with the TDLib include paths) is clean.
 - `./nob` build passes.
-- `./nob test` passes 76 handler tests / 308 checks plus 5 fake-transport e2e
-  tests / 17 checks under ASan+UBSan; `./nob tsan` runs the e2e clean under
-  ThreadSanitizer.
+- `./nob test` passes 76 handler tests / 308 checks + 5 fake-transport e2e
+  tests / 17 checks + 2 core-API tests / 23 checks under ASan+UBSan;
+  `./nob tsan` runs the e2e clean under ThreadSanitizer.
 - cppcheck (with `nob.h:` filtered, as in `AGENTS.md`) reports 2 errors in
   vendored `cJSON.c` (`invalidFunctionArg`, lines 113 and 415) and 16 warnings,
   also in `cJSON.c` (unchanged baseline). In `src/` it reports style-level

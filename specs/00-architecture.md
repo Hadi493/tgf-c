@@ -60,14 +60,16 @@ TDLib is pinned as a git submodule at `v1.8.0-10143-ga17f87c4c`
 
 | File | Lines | Responsibility | Owns state |
 |---|---|---|---|
-| `src/main.c` | 70 | entry, setup, shutdown, config adapter | static `Runtime` (`cfg`, dedupe, tracker, queue, status) |
+| `src/main.c` | 57 | thin CLI consumer: config load, event loop, auth prompts | — |
+| `src/core.c` | 522 | core library: ctx, worker thread, event/command queues, config, commands | `tgf_ctx` (owns `Runtime`) |
 | `src/loop.c` | 102 | response dispatch + one loop tick (`loop_tick`) | — |
 | `src/auth.c` | 72 | auth state machine + prompts | — |
 | `src/resolve.c` | 59 | destination/source resolution | — |
 | `src/poll.c` | 150 | poll request + history handler | — |
 | `src/transport.c` | 24 | JSON request builder (routes via `rt->tp`) | — |
 | `src/transport_tdlib.c` | 18 | real TDLib `Transport` vtable + `transport_destroy` | — |
-| `src/ui.c` | 130 | status sink + dashboard | `ui_rt`, ncurses |
+| `core/tgf_core.h` | 108 | public core API (opaque ctx, events, commands, config) | — |
+| `src/ui.c` | 105 | event-driven dashboard (no core internals) | dashboard display state |
 | `src/config.c` | 89 | `config.json` parsing and defaults | `Config` values only |
 | `src/config.h` | 20 | `Config` struct, `config_load`, `config_free` | — |
 | `src/tgf.h` | 217 | shared types, constants, `Runtime` struct (incl. `tp`), declarations | — |
@@ -87,7 +89,8 @@ through a fake `Transport` (10 §7).
 
 ## 5. Execution model
 
-- **One thread.** All TDLib traffic goes through the `Transport` vtable
+- **Core thread.** The core owns one worker thread running `loop_tick`; the
+  frontend thread only drains events and pushes commands (spec 10 §6). All TDLib traffic goes through the `Transport` vtable
   (`rt->tp`): `send` and `receive(client, 1.0)` (`src/transport.c:6-24`,
   `src/loop.c:62`), backed by `td_json_client_*` (`src/transport_tdlib.c`).
 - **One tick ≈ 1 s.** `receive` blocks up to one second, so every periodic task

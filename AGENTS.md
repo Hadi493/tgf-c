@@ -59,6 +59,7 @@ Rules:
 ./nob              # build (cc -Wall -Wextra -O3, links libtdjson + ncurses)
 ./nob clean        # remove lib/td/build, tgf, tests/tgf_tests, nob.old
 ./nob sanitize     # build tgf with ASan/UBSan (-g -O1), POSIX only
+./nob tsan         # run the e2e under ThreadSanitizer, POSIX only
 ```
 
 First-time bootstrap: `gcc -o nob nob.c && ./nob`.
@@ -93,7 +94,8 @@ Never weaken or suppress a warning to make a change land.
 ## Test
 
 ```sh
-./nob test         # build + run the characterization tests (ASan/UBSan)
+./nob test         # build + run handler, e2e and core-API tests (ASan/UBSan)
+./nob libtgf       # build the core library archive (libtgf.a)
 ./tgf -d           # manual: debug mode, resolution + forwarded lines on stdout,
                    # statuses on stderr, no ncurses
 ```
