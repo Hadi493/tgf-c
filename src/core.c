@@ -58,6 +58,7 @@ static void ev_emit(tgf_ctx *c, tgf_event *e) {
     if (c->ev_tail - c->ev_head == c->ev_cap) {
         int ncap = c->ev_cap * 2, cnt = c->ev_tail - c->ev_head;
         tgf_event **n = calloc(ncap, sizeof(*n));
+        if (!n) { mtx_unlock(&c->ev_mtx); return; }
         for (int i = 0; i < cnt; i++) n[i] = c->ev[(c->ev_head + i) % c->ev_cap];
         free(c->ev);
         c->ev = n; c->ev_cap = ncap; c->ev_head = 0; c->ev_tail = cnt;

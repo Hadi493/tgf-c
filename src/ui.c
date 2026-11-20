@@ -95,7 +95,5 @@ void ui_dashboard_draw(void) {
 void ui_dashboard_end(void) {
 #ifndef TGF_NOGUI
     if (dash_active) { ncurses_cleanup(); dash_active = false; }
-#else
-    (void)0;
 #endif
 }
