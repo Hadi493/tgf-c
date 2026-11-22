@@ -157,13 +157,16 @@ typedef enum { TGF_OK=0, TGF_ERR_INVALID, TGF_ERR_IO, TGF_ERR_OOM,
 
 /* Config: same fields as config.json (05 §2), plus unknown-key preservation. */
 typedef struct { int api_id; char *api_hash; char *dest_channel;
-    char **source_channels; int num_sources; char *history_file;
+    char **source_channels; int num_sources;
+    char **disabled_channels; int num_disabled;   /* 05 §2 */
+    char *history_file;
     int forward_delay_sec, history_window_hours;
     int enable_sequential_forwarding, enable_ordering, sequence_direction;
-    /* per-source enable: format is a Phase 5 decision (see §9) */ } tgf_config;
+} tgf_config;
 
-tgf_status tgf_config_load(const char *path, tgf_config *out);   /* keeps unknown keys */
-tgf_status tgf_config_save(const char *path, const tgf_config *);/* tmp+fsync+rename, 0600 */
+tgf_status tgf_config_load(const char *path, tgf_config *out);   /* validates 05 §2 */
+tgf_status tgf_config_save(const char *path, const tgf_config *);/* tmp+fsync+rename, 0600, unknown keys kept */
+const char *tgf_config_error(void);                              /* last load failure, startup-only */
 void       tgf_config_free(tgf_config *);
 
 /* Transport vtable (Phase 1): real TDLib impl + fake impl. */
@@ -199,6 +202,11 @@ tgf_status tgf_add_source(tgf_ctx *, const char *handle);
 tgf_status tgf_remove_source(tgf_ctx *, long long id);
 tgf_status tgf_set_source_enabled(tgf_ctx *, long long id, bool);
 tgf_status tgf_rescan_source(tgf_ctx *, long long id);
+/* Handle-addressed variants. A source disabled in config is never resolved,
+ * so it has no chat id; frontends address it by its configured handle. */
+tgf_status tgf_remove_source_by_handle(tgf_ctx *, const char *handle);
+tgf_status tgf_set_source_enabled_by_handle(tgf_ctx *, const char *handle, bool);
+tgf_status tgf_rescan_source_by_handle(tgf_ctx *, const char *handle);
 tgf_status tgf_apply_config(tgf_ctx *, const tgf_config *);
 tgf_status tgf_logout(tgf_ctx *);
 ```
@@ -208,6 +216,11 @@ all logging via `TGF_EV_LOG`/`TGF_EV_ERROR` (no `printf`); secrets never placed 
 and secret buffers zeroed after use; `keep_running` becomes `atomic_bool`. Every function
 gets a thread-safety + ownership comment. `tgf_event_fd` lets a frontend integrate with
 `poll()` or a GLib `GSource` without busy-waiting.
+
+The id-addressed source commands only work for sources that resolved to a chat id.
+`disabled_channels` entries are skipped during resolution (05 §2), so a source disabled
+at startup has id `0` and can only be enabled by handle. The handle variants normalize
+`@name`/`name`/`t.me/name` exactly like `disabled_channels` matching.
 
 ---
 
@@ -297,8 +310,9 @@ working. `./nob` links `libtgf.a` + the TUI object (ncurses only in the TUI, not
 **Phase 5 — GUI capability decision gate (STOP AND ASK).** Pause/resume, per-source
 counters + last-seen id, per-source rescan, add-source with resolution, rate-limit countdown
 event: implement behind the API; report where the current design makes each hard.
-**Per-source enable/disable** (09 §12 item 3): `config.json` has no per-source flag — choose
-`disabled_channels: []` vs object entries in `source_channels`, backward compatible.
+**Per-source enable/disable** (09 §12 item 3): decided as
+`disabled_channels: []` (05 §2). Disabled entries stay in `source_channels`, are skipped
+during resolution and polling, and are addressed by handle when the frontend has no chat id.
 **Instance lock** on `tdlib_db/` (D12): none exists app-level; propose one. These are product
 decisions; do not guess.
 
@@ -381,11 +395,13 @@ Implemented and observed:
 
 Deviations / open (Phase 5 decision gate):
 - Single context per process (`s_ctx` shortcut) — fine for CLI + GUI single instance.
-- Per-source enable/disable is runtime-only (not persisted); storage format
-  (`disabled_channels` vs object entries) is still the open product decision.
+- Per-source enable/disable persists through `disabled_channels` (05 §2); loaded-disabled
+  sources are addressed by handle because they have no chat id.
 - Instance lock on `tdlib_db/` NOT implemented (still the open GUI-074 item).
 - `apply_config` re-resolves; full hot-reload semantics are Phase 5.
 
 | Date | Change |
 |---|---|
 | 2026-11-20 | Phase 0 draft created: as-built audit (§3), prompt/spec discrepancy report (§2, D1–D14), proposed API/threading/migration (§5–8), open decisions (§9), risks (§10), acceptance (§11). No code changed. |
+| 2026-11-21 | Core-API repair: `tgf_config_load` now validates the 05 §2 schema and reports `tgf_config_error()`; `disabled_channels` added; `tgf_apply_config` reallocates `source_chat_ids` and re-resolves the destination (heap overflow fixed); add/remove source are memory-safe and re-resolve only the new slot; `tgf_destroy` frees tracker pending buffers and clears the context shortcut; fatal paths no longer `exit()`/`printf()` inside the core (destination/source resolution failures become `TGF_EV_ERROR` + a clean stop); `SOURCE_STATE`, `CONNECTION_STATE` and aggregate `SKIPPED` events are emitted. |
+| 2026-11-21 | Added handle-addressed `remove_source_by_handle` / `set_source_enabled_by_handle` / `rescan_source_by_handle` because a source disabled at startup never resolves and therefore has no chat id. `disabled_channels` confirmed as the per-source enable format. |

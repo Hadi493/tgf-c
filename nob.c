@@ -17,7 +17,7 @@ static void clean(void)
     cmd_run(&rm);
 #else
     Cmd rm = {0};
-    cmd_append(&rm, "rm", "-rf", TD_BUILD, "tgf", TEST_BIN, "tests/tgf_e2e", "tests/tgf_e2e_tsan", "tests/tgf_core", "nob.old");
+    cmd_append(&rm, "rm", "-rf", TD_BUILD, "tgf", "tgf-gui", TEST_BIN, "tests/tgf_e2e", "tests/tgf_e2e_tsan", "tests/tgf_core", "nob.old");
     cmd_run(&rm);
 #endif
 }
@@ -128,7 +128,7 @@ static int run_core(void)
     cmd_append(&cmd, "-pthread");
     cmd_append(&cmd, "-I.", "-Isrc", "-Icore", "-Itests");
     nob_cc_output(&cmd, "tests/tgf_core");
-    cmd_append(&cmd, "tests/test_core.c", "tests/transport_fake.c", "src/core.c", "src/loop.c",
+    cmd_append(&cmd, "tests/test_core.c", "tests/transport_fake.c", "src/core.c", "src/core_cmd.c", "src/core_config.c", "src/loop.c",
                "src/transport.c", "src/auth.c", "src/resolve.c", "src/poll.c", "src/tracker.c",
                "src/history.c", "src/forward.c", "src/config.c", "src/ui.c", "cJSON.c");
 
@@ -210,6 +210,8 @@ static int run_sanitize(void)
     cmd_append(&cmd, "src/config.c");
     cmd_append(&cmd, "src/main.c");
     cmd_append(&cmd, "src/core.c");
+    cmd_append(&cmd, "src/core_cmd.c");
+    cmd_append(&cmd, "src/core_config.c");
     cmd_append(&cmd, "src/loop.c");
     cmd_append(&cmd, "src/auth.c");
     cmd_append(&cmd, "src/resolve.c");
@@ -229,7 +231,7 @@ static int build_libtgf(void)
     nob_log(NOB_INFO, "Building libtgf.a ...");
     const char *srcs[] = {"cJSON.c", "src/tracker.c", "src/history.c", "src/forward.c",
         "src/config.c", "src/resolve.c", "src/poll.c", "src/loop.c", "src/transport.c",
-        "src/transport_tdlib.c", "src/auth.c", "src/core.c"};
+        "src/transport_tdlib.c", "src/auth.c", "src/core.c", "src/core_cmd.c", "src/core_config.c"};
     int n = (int)(sizeof(srcs) / sizeof(srcs[0]));
     char objs[8192]; objs[0] = 0;
     for (int i = 0; i < n; i++) {
@@ -253,6 +255,26 @@ static int build_libtgf(void)
     cmd_append(&a, "ar", "rcs", "libtgf.a");
     for (char *tok = strtok(objs, " "); tok; tok = strtok(NULL, " ")) cmd_append(&a, tok);
     return cmd_run(&a);
+}
+
+static int build_gui(void) {
+    Cmd chk = {0};
+    cmd_append(&chk, "pkg-config", "--exists", "gtk4", "libadwaita-1");
+    if (!cmd_run(&chk, .stdout_path = "/dev/null", .stderr_path = "/dev/null")) {
+        nob_log(NOB_ERROR, "gtk4 and libadwaita-1 are required for ./nob gui "
+                           "(Arch packages: gtk4, libadwaita)");
+        return 0;
+    }
+    Cmd cmd = {0};
+    nob_log(NOB_INFO, "Building tgf-gui ...");
+    cmd_append(&cmd, "sh", "-c",
+        "cc -Wall -Wextra -O2 -Isrc -Icore -I. -pthread "
+        "$(pkg-config --cflags gtk4 libadwaita-1) -o tgf-gui "
+        "src/gui/main.c src/gui/bridge.c src/gui/win_main.c src/gui/page_dashboard.c src/gui/page_sources.c src/gui/page_settings.c src/gui/page_signin.c "
+        "src/core.c src/core_cmd.c src/core_config.c src/loop.c src/transport.c src/transport_tdlib.c src/auth.c src/resolve.c src/poll.c src/tracker.c src/history.c src/forward.c src/config.c cJSON.c "
+        "-Ilib/td -Ilib/td/build "
+        "$(pkg-config --libs gtk4 libadwaita-1) -Llib/td/build -ltdjson -Wl,-rpath,\\$ORIGIN/lib/td/build");
+    return cmd_run(&cmd);
 }
 
 int main(int argc, char **argv)
@@ -317,6 +339,27 @@ int main(int argc, char **argv)
         return 1;
 #else
         return build_libtgf() ? 0 : 1;
+#endif
+    }
+
+    if (argc > 1 && strcmp(argv[1], "gui") == 0) {
+#ifdef _WIN32
+        nob_log(NOB_ERROR, "gui target is not supported on Windows yet");
+        return 1;
+#else
+        return build_gui() ? 0 : 1;
+#endif
+    }
+
+    if (argc > 1 && strcmp(argv[1], "run-gui") == 0) {
+#ifdef _WIN32
+        nob_log(NOB_ERROR, "run-gui target is not supported on Windows yet");
+        return 1;
+#else
+        if (!build_gui()) return 1;
+        Cmd run = {0};
+        cmd_append(&run, "./tgf-gui");
+        return cmd_run(&run) ? 0 : 1;
 #endif
     }
 

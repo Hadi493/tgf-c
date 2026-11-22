@@ -290,6 +290,42 @@ changes). The IDs are referenced from the feature specs; do not renumber them.
   service-friendly layout.
 - **Fix gate:** path resolution/`--config` feature spec.
 
+#### TD-30 — GUI: source/queue lists rebuilt instead of updated in place
+- **Spec clauses:** 09 §4 (GUI-020).
+- **Evidence:** `src/gui/page_dashboard.c`, `src/gui/page_sources.c` clear and
+  re-append `GtkListBox` rows on `SOURCE_STATE`; the dashboard queue list is
+  also rebuilt on `QUEUE`. `GtkListBox` is used instead of `GListStore` +
+  `GtkListView` + `GtkSignalListItemFactory`. The log is rendered into a
+  `GtkLabel` from the ring (GUI-098), not a list.
+- **Impact:** widget churn; no correctness impact at v1 scale (64 sources,
+  200 log lines rendered).
+- **Resolution:** bind `GListStore` models with a list-item factory and
+  update rows in place.
+
+#### TD-31 — GUI: log ring cap is 256, not the specified 2000
+- **Spec clauses:** 09 §4 (GUI-021).
+- **Evidence:** `TGF_GUI_MAX_LOG` in `src/gui/gui.h`.
+- **Impact:** fewer retained lines under heavy traffic; memory stays bounded
+  either way.
+- **Resolution:** raise to 2000 (or make the cap configurable) in a GUI pass.
+
+#### TD-32 — GUI: no instance lock on `tdlib_db/`
+- **Spec clauses:** 09 §14, GUI-074.
+- **Evidence:** no lockfile/PID check; a second GUI (or GUI + CLI) against the
+  same `tdlib_db/` is only stopped by TDLib's own DB lock.
+- **Impact:** two frontends can fight over one session; not silent data loss.
+- **Resolution:** PID/lockfile in spec 10 Phase 5, then surface the message.
+
+#### TD-33 — GUI: `AdwEntryRow` not usable for text input on this libadwaita
+- **Spec clauses:** 09 §2, §5.3 (GUI-120..124).
+- **Evidence:** the installed libadwaita 1.10 header has no text accessors on
+  `AdwEntryRow`; `src/gui/page_settings.c` and `src/gui/page_signin.c` use
+  `GtkEntry` (with `gtk_editable_get_text/set_text`).
+- **Impact:** look-and-feel differs from the canvas for the settings/sign-in
+  text fields.
+- **Resolution:** when a libadwaita with text accessors is required, swap the
+  rows and keep the same validation/preview logic.
+
 ## 3. Structural refactor plan (Phase 3)
 
 Rules: each step compiles, passes the lint gate, and preserves every scenario
@@ -438,3 +474,5 @@ structural refactor would violate Phase 2:
 | 2026-11-19 | Step 4.4b done: durable pending journal seq_pending.txt (05 §4.3, 04 amended); TD-02 addressed; Step 4.4 complete |
 | 2026-11-19 | Step 4.5 done (partial): album split fixes stack overflow, truncation guard, tracker/page-full warnings (TD-09 partial); reply excess + pagination remain |
 | 2026-11-19 | Step 4.6 done (partial): enable_ordering flag split + argv validation (TD-14 addressed); TD-23 dashboard states remain |
+| 2026-11-21 | GUI implemented: `./nob gui` / `./nob run-gui` build `tgf-gui` (09 §11, GUI-040..043); verified headless with Xvfb against a scratch config; debt TD-30..TD-33 registered |
+| 2026-11-22 | Dashboard artboard port (09 GUI-098/GUI-099): TD-30 evidence updated for the queue list and the label-rendered log; no new debt, TD-31..TD-33 unchanged. |

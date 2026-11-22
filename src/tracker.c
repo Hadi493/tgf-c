@@ -25,13 +25,16 @@ void tracker_store_save(const TrackerStore *ts) {
     FILE *f = fopen("seq_tracker.txt.tmp", "w");
     if (!f) return;
     for (int i = 0; i < ts->count; i++)
-        fprintf(f, "%lld %lld %lld %lld %d\n", ts->entries[i].chat_id, ts->entries[i].last_msg_id, ts->entries[i].last_date, ts->entries[i].scan_from_id, ts->entries[i].backfill_done);
+        fprintf(f, "%lld %lld %lld %lld %d\n", ts->entries[i].chat_id, ts->entries[i].last_msg_id,
+                ts->entries[i].last_date, ts->entries[i].scan_from_id,
+                ts->entries[i].backfill_done);
     fclose(f);
     rename("seq_tracker.txt.tmp", "seq_tracker.txt");
 }
 
 void tracker_store_set(TrackerStore *ts, long long chat_id, long long msg_id, long long date) {
-    (void)msg_id; (void)date;
+    (void)msg_id;
+    (void)date;
     for (int i = 0; i < ts->count; i++) {
         if (ts->entries[i].chat_id == chat_id) {
             if (msg_id > ts->entries[i].last_msg_id) ts->entries[i].last_msg_id = msg_id;
@@ -53,8 +56,7 @@ void tracker_store_set(TrackerStore *ts, long long chat_id, long long msg_id, lo
 
 long long tracker_store_get_scan_from(const TrackerStore *ts, long long chat_id) {
     for (int i = 0; i < ts->count; i++)
-        if (ts->entries[i].chat_id == chat_id)
-            return ts->entries[i].scan_from_id;
+        if (ts->entries[i].chat_id == chat_id) return ts->entries[i].scan_from_id;
     return 0;
 }
 
@@ -80,8 +82,7 @@ void tracker_store_set_scan_from(TrackerStore *ts, long long chat_id, long long 
 
 int tracker_store_is_backfill_done(const TrackerStore *ts, long long chat_id) {
     for (int i = 0; i < ts->count; i++)
-        if (ts->entries[i].chat_id == chat_id)
-            return ts->entries[i].backfill_done;
+        if (ts->entries[i].chat_id == chat_id) return ts->entries[i].backfill_done;
     return 0;
 }
 
@@ -113,7 +114,10 @@ static int pending_push_ram(TrackerStore *ts, long long chat_id, PendingMsg msg)
             if (n >= cap) {
                 cap = cap ? cap * 2 : 512;
                 PendingMsg *np = realloc(ts->entries[i].pending, cap * sizeof(PendingMsg));
-                if (!np) { ui_oom("OOM in pending_append"); return 0; }
+                if (!np) {
+                    ui_oom("OOM in pending_append");
+                    return 0;
+                }
                 ts->entries[i].pending = np;
                 ts->entries[i].pending_cap = cap;
             }
@@ -129,7 +133,8 @@ void tracker_store_pending_append(TrackerStore *ts, long long chat_id, PendingMs
     if (!pending_push_ram(ts, chat_id, msg)) return;
     FILE *f = fopen("seq_pending.txt", "a");
     if (!f) return;
-    fprintf(f, "%lld %lld %lld %lld %lld\n", chat_id, msg.id, msg.album_id, msg.reply_to_msg_id, msg.date);
+    fprintf(f, "%lld %lld %lld %lld %lld\n", chat_id, msg.id, msg.album_id, msg.reply_to_msg_id,
+            msg.date);
     fclose(f);
 }
 
@@ -139,8 +144,9 @@ void seq_pending_load(Runtime *rt) {
     char line[256];
     while (fgets(line, sizeof(line), f)) {
         long long chat, id, album, reply, date;
-        if (sscanf(line, "%lld %lld %lld %lld %lld", &chat, &id, &album, &reply, &date) < 5) continue;
-        PendingMsg m = { id, album, reply, date };
+        if (sscanf(line, "%lld %lld %lld %lld %lld", &chat, &id, &album, &reply, &date) < 5)
+            continue;
+        PendingMsg m = {id, album, reply, date};
         pending_push_ram(&rt->tracker, chat, m);
     }
     fclose(f);
@@ -150,7 +156,10 @@ static void seq_pending_compact(long long chat_id) {
     FILE *f = fopen("seq_pending.txt", "r");
     if (!f) return;
     FILE *out = fopen("seq_pending.txt.tmp", "w");
-    if (!out) { fclose(f); return; }
+    if (!out) {
+        fclose(f);
+        return;
+    }
     char line[256];
     while (fgets(line, sizeof(line), f)) {
         long long chat;
@@ -166,7 +175,8 @@ void flush_pending(Runtime *rt, long long src_chat_id) {
     for (int i = 0; i < rt->tracker.count; i++) {
         if (rt->tracker.entries[i].chat_id == src_chat_id) {
             if (rt->tracker.entries[i].pending_count > 0)
-                process_msgs(rt, src_chat_id, rt->tracker.entries[i].pending, rt->tracker.entries[i].pending_count);
+                process_msgs(rt, src_chat_id, rt->tracker.entries[i].pending,
+                             rt->tracker.entries[i].pending_count);
             free(rt->tracker.entries[i].pending);
             rt->tracker.entries[i].pending = NULL;
             rt->tracker.entries[i].pending_count = 0;

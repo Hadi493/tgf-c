@@ -60,6 +60,8 @@ typedef struct {
     char  *dest_channel;
     char **source_channels;
     int    num_sources;
+    char **disabled_channels;   /* optional; 05 §2 */
+    int    num_disabled;
     char  *history_file;
     int    forward_delay_sec;
     int    history_window_hours;
@@ -70,6 +72,9 @@ typedef struct {
 
 tgf_status tgf_config_load(const char *path, tgf_config *out);
 tgf_status tgf_config_save(const char *path, const tgf_config *cfg);
+/* Human-readable reason for the last tgf_config_load failure. Startup-only;
+ * static storage, not thread-safe. NULL when the last load succeeded. */
+const char *tgf_config_error(void);
 void       tgf_config_free(tgf_config *cfg);
 
 /* ---- events (core -> frontend) ---------------------------------------- */
@@ -140,6 +145,11 @@ tgf_status tgf_add_source(tgf_ctx *ctx, const char *handle);
 tgf_status tgf_remove_source(tgf_ctx *ctx, int64_t id);
 tgf_status tgf_set_source_enabled(tgf_ctx *ctx, int64_t id, bool enabled);
 tgf_status tgf_rescan_source(tgf_ctx *ctx, int64_t id);
+/* Handle-addressed variants: a source disabled in config is never resolved and
+ * has no chat id, so frontends address it by its configured handle. */
+tgf_status tgf_remove_source_by_handle(tgf_ctx *ctx, const char *handle);
+tgf_status tgf_set_source_enabled_by_handle(tgf_ctx *ctx, const char *handle, bool enabled);
+tgf_status tgf_rescan_source_by_handle(tgf_ctx *ctx, const char *handle);
 tgf_status tgf_apply_config(tgf_ctx *ctx, const tgf_config *cfg);
 tgf_status tgf_logout(tgf_ctx *ctx);
 

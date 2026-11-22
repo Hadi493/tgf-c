@@ -12,7 +12,7 @@
 #include "../core/tgf_core.h"
 
 #define POLL_INTERVAL 5
-#define MSG_LIMIT     10000
+#define MSG_LIMIT 10000
 
 #define MAX_SEQ_TRACKER 128
 
@@ -25,10 +25,10 @@ typedef struct {
     long long last_msg_id;
     long long last_date;
     long long scan_from_id;
-    int       backfill_done;
+    int backfill_done;
     PendingMsg *pending;
-    int       pending_count;
-    int       pending_cap;
+    int pending_count;
+    int pending_cap;
 } SeqEntry;
 
 #define MAX_FWD_IDS 256
@@ -38,25 +38,25 @@ typedef struct {
 typedef struct {
     long long src_chat_id;
     long long *ids;
-    int       count;
-    int       retries;
+    int count;
+    int retries;
 } ForwardJob;
 
 typedef struct {
     char **set;
-    int    set_size;
-    int    count;
+    int set_size;
+    int count;
     time_t *time;
 } HistoryStore;
 
 typedef struct {
     SeqEntry entries[MAX_SEQ_TRACKER];
-    int      count;
+    int count;
 } TrackerStore;
 
 typedef struct {
     long long ids[MAX_FWD_IDS];
-    int       count;
+    int count;
 } GroupJob;
 
 typedef struct {
@@ -65,10 +65,10 @@ typedef struct {
 } GroupMark;
 
 typedef struct {
-    GroupJob  *jobs;
-    int        job_count;
+    GroupJob *jobs;
+    int job_count;
     GroupMark *marks;
-    int        mark_count;
+    int mark_count;
 } GroupResult;
 
 typedef enum {
@@ -93,17 +93,32 @@ typedef struct {
 
 static inline const char *request_extra(RequestId id, char *buf, size_t size) {
     switch (id.kind) {
-    case REQ_AUTH_PARAMS:  return "auth_params";
-    case REQ_AUTH_PHONE:   return "auth_phone";
-    case REQ_AUTH_CODE:    return "auth_code";
-    case REQ_AUTH_PW:      return "auth_pw";
-    case REQ_GETME:        return "getme";
-    case REQ_RESOLVE_DEST: return "resolve_dest";
-    case REQ_NONE:         return NULL;
-    case REQ_RESOLVE_SOURCE: snprintf(buf, size, "resolve_%lld", id.chat_id); return buf;
-    case REQ_HISTORY:      snprintf(buf, size, "history_%lld", id.chat_id); return buf;
-    case REQ_FORWARD_ONE:  snprintf(buf, size, "fwd_%lld_%lld", id.chat_id, id.msg_id); return buf;
-    case REQ_FORWARD_BATCH: snprintf(buf, size, "fwd_%lld_batch", id.chat_id); return buf;
+    case REQ_AUTH_PARAMS:
+        return "auth_params";
+    case REQ_AUTH_PHONE:
+        return "auth_phone";
+    case REQ_AUTH_CODE:
+        return "auth_code";
+    case REQ_AUTH_PW:
+        return "auth_pw";
+    case REQ_GETME:
+        return "getme";
+    case REQ_RESOLVE_DEST:
+        return "resolve_dest";
+    case REQ_NONE:
+        return NULL;
+    case REQ_RESOLVE_SOURCE:
+        snprintf(buf, size, "resolve_%lld", id.chat_id);
+        return buf;
+    case REQ_HISTORY:
+        snprintf(buf, size, "history_%lld", id.chat_id);
+        return buf;
+    case REQ_FORWARD_ONE:
+        snprintf(buf, size, "fwd_%lld_%lld", id.chat_id, id.msg_id);
+        return buf;
+    case REQ_FORWARD_BATCH:
+        snprintf(buf, size, "fwd_%lld_batch", id.chat_id);
+        return buf;
     }
     return NULL;
 }
@@ -125,42 +140,45 @@ typedef struct Runtime {
     Config cfg;
     const tgf_transport *tp;
 
-    int       authorized;
-    int       dest_resolved;
+    int authorized;
+    int dest_resolved;
     long long dest_chat_id;
     long long *source_chat_ids;
-    char     *src_name;
-    int       source_count;
-    int       resolve_index;
-    int       resolve_active;
-    int       debug;
+    char *src_name;
+    int source_count;
+    int resolve_index;
+    int resolve_active;
+    int debug;
 
-    void (*emit)(struct Runtime *rt, const tgf_event *ev);  /* core event sink (may be NULL) */
-    tgf_ctx  *core;                                   /* owning core (may be NULL) */
+    void (*emit)(struct Runtime *rt, const tgf_event *ev); /* core event sink (may be NULL) */
+    tgf_ctx *core;                                         /* owning core (may be NULL) */
 
     HistoryStore history;
     TrackerStore tracker;
 
     ForwardJob *fwd_queue;
-    int         fwd_queue_count;
-    int         fwd_queue_cap;
-    int         fwd_queue_head;
-    double      fwd_last_time;
-    ForwardJob  fwd_inflight;
-    bool        fwd_inflight_active;
-    double      fwd_inflight_time;
-    double      fwd_flood_until;
+    int fwd_queue_count;
+    int fwd_queue_cap;
+    int fwd_queue_head;
+    double fwd_last_time;
+    ForwardJob fwd_inflight;
+    bool fwd_inflight_active;
+    double fwd_inflight_time;
+    double fwd_flood_until;
 
     volatile bool keep_running;
-    bool          dashboard_active;
-    char          status_msg[256];
+    bool dashboard_active;
+    int fatal;
+    char fatal_msg[256];
+    char status_msg[256];
 } Runtime;
 
-#define APPEND_ID(ids, pos, size, val) do { \
-    int n_ = snprintf((ids) + (pos), (size) - (pos), "%s%lld", \
-        (pos) == 0 ? "" : ",", (long long)(val)); \
-    if (n_ > 0) (pos) += n_; \
-} while (0)
+#define APPEND_ID(ids, pos, size, val)                                                             \
+    do {                                                                                           \
+        int n_ = snprintf((ids) + (pos), (size) - (pos), "%s%lld", (pos) == 0 ? "" : ",",          \
+                          (long long)(val));                                                       \
+        if (n_ > 0) (pos) += n_;                                                                   \
+    } while (0)
 
 // --- functions ---
 
@@ -179,6 +197,8 @@ void transport_destroy(void *client);
 void auth_handle(Runtime *rt, void *client, const char *json);
 void auth_submit(Runtime *rt, void *client, int kind, const char *value);
 void resolve_next(Runtime *rt, void *client);
+void resolve_destination(Runtime *rt, void *client);
+void resolve_source_failed(Runtime *rt, void *client, int idx, int code);
 void getme_handle(Runtime *rt, void *client, cJSON *root, RequestId id, char *argv[]);
 void resolve_dest_handle(Runtime *rt, void *client, cJSON *root, RequestId id, char *argv[]);
 void resolve_source_handle(Runtime *rt, void *client, cJSON *root, RequestId id, char *argv[]);
@@ -189,7 +209,8 @@ void forward_handle(Runtime *rt, void *client, cJSON *root, RequestId id, char *
 void forward_error_handle(Runtime *rt, RequestId id, int code, const char *msg);
 
 void history_store_load(HistoryStore *hs, const Config *cfg);
-int  history_store_has(const HistoryStore *hs, const Config *cfg, long long chat_id, long long msg_id);
+int history_store_has(const HistoryStore *hs, const Config *cfg, long long chat_id,
+                      long long msg_id);
 void history_store_add(HistoryStore *hs, const Config *cfg, long long chat_id, long long msg_id);
 void history_store_prune(HistoryStore *hs, const Config *cfg);
 
@@ -198,7 +219,7 @@ void tracker_store_save(const TrackerStore *ts);
 void tracker_store_set(TrackerStore *ts, long long chat_id, long long msg_id, long long date);
 long long tracker_store_get_scan_from(const TrackerStore *ts, long long chat_id);
 void tracker_store_set_scan_from(TrackerStore *ts, long long chat_id, long long msg_id);
-int  tracker_store_is_backfill_done(const TrackerStore *ts, long long chat_id);
+int tracker_store_is_backfill_done(const TrackerStore *ts, long long chat_id);
 void tracker_store_set_backfill_done(TrackerStore *ts, long long chat_id, int done);
 void tracker_store_pending_append(TrackerStore *ts, long long chat_id, PendingMsg msg);
 void seq_pending_load(Runtime *rt);
@@ -207,7 +228,7 @@ void flush_pending(Runtime *rt, long long src_chat_id);
 void fwd_queue_push(Runtime *rt, long long src_chat_id, const long long *ids, int count);
 void fwd_queue_save(Runtime *rt);
 void fwd_queue_load(Runtime *rt);
-int  process_fwd_queue(Runtime *rt, void *client);
+int process_fwd_queue(Runtime *rt, void *client);
 void process_msgs(Runtime *rt, long long src_chat_id, PendingMsg *msgs, int count);
 GroupResult group_batch(const PendingMsg *msgs, int count, int order);
 void group_result_free(GroupResult *r);

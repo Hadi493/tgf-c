@@ -72,8 +72,21 @@ dashboard_active = true;
 atexit(ncurses_cleanup);   // endwin()
 ```
 
-Refresh at most once per second (`time(NULL)` delta), then every refresh calls
-`clear()` and redraws the whole screen (`print_dashboard`, `src/ui.c:48-71`).
+Refresh at most once per second: `ui_dashboard_draw` (`src/ui.c:91-98`) gates
+redraws with a `time(NULL)` delta. Each redraw calls `clear()` and repaints the
+whole screen (`print_dashboard`, `src/ui.c:32-51`). Events still update dashboard
+state as they arrive (`src/main.c:94`); several events in one tick are coalesced
+into the next 1 Hz redraw.
+
+`TGF_EV_SOURCE_STATE` is the one event that must reach the dashboard *before*
+the dashboard opens. Resolution emits it while `dash_begun` is still false
+(`src/resolve.c:21-32,115,123`), ahead of the `TGF_PIPE_RUNNING` event that
+opens ncurses (`src/resolve.c:70-76`). `main.c` therefore forwards
+`SOURCE_STATE` to `ui_dashboard_event` unconditionally, not gated on
+`dash_begun`; all other kinds stay gated so early `TGF_EV_LOG` lines still go
+to stderr only (§2.1). `ui_dashboard_event` only writes module-static state and
+makes no curses calls, so pre-`begin` delivery is safe. Without this, the final
+source count is drained and dropped and `Source Channels` stays `0`.
 
 `print_dashboard` runs only after destination and source resolution complete;
 during resolution the process is in plain stderr mode even with no argv.
@@ -102,7 +115,8 @@ Observations:
 - `Status` is the literal string `ACTIVE`; it does not reflect resolution,
   queue, or error state.
 - `Source Channels` is `source_count` (successful resolutions), not
-  `num_sources`.
+  `num_sources`; the value rides in the final `TGF_EV_SOURCE_STATE` emitted
+  during resolution and is captured before the dashboard opens (§3.1).
 - `FORWARDED from` is the **last source whose forward response succeeded**
   (`src_name`, default `"unknown"`), not a live per-message log
   (`src/forward.c:237-249`). `update_action_msg` (`src/ui.c:73-77`) is called immediately
@@ -159,6 +173,8 @@ timeout (~1 s), plus any blocking auth prompt (01 §2.4).
 | No `TERM` in environment | ncurses error and process exit |
 | Terminal resized | Layout not adjusted |
 | Two errors in one second | Only the second is visible |
+| Several events in one tick | State updates immediately; one redraw on the next 1 Hz tick |
+| `SOURCE_STATE` before dashboard opens | Count captured pre-`begin`; first draw shows it instead of `0` |
 | `./tgf foo` | No dashboard, no debug output, status to stderr |
 | PID in the hint | Actual PID; `kill`/`pkill` commands are literal text |
 
@@ -173,6 +189,8 @@ timeout (~1 s), plus any blocking auth prompt (01 §2.4).
 | SC-06-05 | Misconfigured destination | `ERROR: Failed to resolve destination ...`, exit 1 |
 | SC-06-06 | Send SIGINT | Terminal restored, shell prompt returns, exit 0 |
 | SC-06-07 | `env -u TERM ./tgf` | ncurses startup failure |
+| SC-06-08 | Leave the dashboard running with no traffic | Full-screen redraw happens at most once per second; no continuous flicker |
+| SC-06-09 | `./tgf` with N sources resolving successfully | First dashboard draw shows `Source Channels ....... N`, not `0` |
 
 ## Amendment log
 
@@ -184,3 +202,5 @@ timeout (~1 s), plus any blocking auth prompt (01 §2.4).
 | 2026-11-17 | Step 4.1: Destination resolution failure now fatal (exit 1); all-sources-failed and empty-sources now fatal (exit 1); dashboard never starts on resolution failure |
 | 2026-11-19 | Step 4.1 restoration: dashboard init gated on full resolution (no dashboard on fatal paths); ui_init sink selection documented; refreshed citations |
 | 2026-11-19 | Step 4.6: argv validated (only no-arg or -d; else usage + exit 1); TD-14 addressed; SC-06-03 updated |
+| 2026-11-22 | Restored the §3.1 1 Hz redraw throttle lost in the event-driven rewrite: `ui_dashboard_draw` now gates full redraws by `time(NULL)`; events still update state immediately. Added edge case and SC-06-08 |
+| 2026-11-22 | Fixed `Source Channels` stuck at `0`: `main.c` now forwards `TGF_EV_SOURCE_STATE` to the dashboard before `dash_begun`, capturing the count emitted during resolution. Updated §3.1/§3.2, edge case, added SC-06-09 |

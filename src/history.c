@@ -2,14 +2,22 @@
 
 static unsigned int history_hash(const char *key) {
     unsigned int h = 2166136261u;
-    while (*key) {h ^= (unsigned char)*key++; h *= 16777619u; }
+    while (*key) {
+        h ^= (unsigned char)*key++;
+        h *= 16777619u;
+    }
     return h;
 }
 
 static void history_rehash(HistoryStore *hs, int new_size) {
     char **ns = calloc(new_size, sizeof(char *));
     time_t *nt = calloc(new_size, sizeof(time_t));
-    if (!ns || !nt) { free(ns); free(nt); ui_oom("OOM: history rehash"); return; }
+    if (!ns || !nt) {
+        free(ns);
+        free(nt);
+        ui_oom("OOM: history rehash");
+        return;
+    }
     for (int i = 0; i < hs->set_size; i++) {
         if (hs->set[i]) {
             unsigned int idx = history_hash(hs->set[i]) & (new_size - 1);
@@ -31,17 +39,25 @@ void history_store_load(HistoryStore *hs, const Config *cfg) {
     if (!hs->set) {
         hs->set = calloc(16384, sizeof(char *));
         hs->time = calloc(16384, sizeof(time_t));
-        if (!hs->set || !hs->time) { free(hs->set); free(hs->time); hs->set = NULL; hs->time = NULL; ui_oom("OOM: history init"); fclose(f); return; }
+        if (!hs->set || !hs->time) {
+            free(hs->set);
+            free(hs->time);
+            hs->set = NULL;
+            hs->time = NULL;
+            ui_oom("OOM: history init");
+            fclose(f);
+            return;
+        }
         hs->set_size = 16384;
     }
     char line[128];
     while (fgets(line, sizeof(line), f)) {
         line[strcspn(line, "\r\n")] = 0;
         if (!line[0]) continue;
-        char key[64]; long long ts = 0;
+        char key[64];
+        long long ts = 0;
         if (sscanf(line, "%63s %lld", key, &ts) < 1) continue;
-        if (hs->count >= hs->set_size * 3 / 4)
-            history_rehash(hs, hs->set_size * 2);
+        if (hs->count >= hs->set_size * 3 / 4) history_rehash(hs, hs->set_size * 2);
         unsigned int idx = history_hash(key) & (hs->set_size - 1);
         while (hs->set[idx]) {
             if (strcmp(hs->set[idx], key) == 0) break;
@@ -49,14 +65,18 @@ void history_store_load(HistoryStore *hs, const Config *cfg) {
         }
         if (hs->set[idx]) continue;
         hs->set[idx] = strdup(key);
-        if (!hs->set[idx]) { ui_oom("OOM: history strdup"); break; }
+        if (!hs->set[idx]) {
+            ui_oom("OOM: history strdup");
+            break;
+        }
         hs->time[idx] = (time_t)ts;
         hs->count++;
     }
     fclose(f);
 }
 
-int history_store_has(const HistoryStore *hs, const Config *cfg, long long chat_id, long long msg_id) {
+int history_store_has(const HistoryStore *hs, const Config *cfg, long long chat_id,
+                      long long msg_id) {
     if (!hs->set) return 0;
     char key[64];
     snprintf(key, sizeof(key), "%lld_%lld", chat_id, msg_id);
@@ -78,11 +98,17 @@ void history_store_add(HistoryStore *hs, const Config *cfg, long long chat_id, l
     if (!hs->set) {
         hs->set = calloc(16384, sizeof(char *));
         hs->time = calloc(16384, sizeof(time_t));
-        if (!hs->set || !hs->time) { free(hs->set); free(hs->time); hs->set = NULL; hs->time = NULL; ui_oom("OOM: history init"); return; }
+        if (!hs->set || !hs->time) {
+            free(hs->set);
+            free(hs->time);
+            hs->set = NULL;
+            hs->time = NULL;
+            ui_oom("OOM: history init");
+            return;
+        }
         hs->set_size = 16384;
     }
-    if (hs->count >= hs->set_size * 3 / 4)
-        history_rehash(hs, hs->set_size * 2);
+    if (hs->count >= hs->set_size * 3 / 4) history_rehash(hs, hs->set_size * 2);
     char key[64];
     snprintf(key, sizeof(key), "%lld_%lld", chat_id, msg_id);
     unsigned int idx = history_hash(key) & (hs->set_size - 1);
@@ -94,11 +120,17 @@ void history_store_add(HistoryStore *hs, const Config *cfg, long long chat_id, l
         idx = (idx + 1) & (hs->set_size - 1);
     }
     hs->set[idx] = strdup(key);
-    if (!hs->set[idx]) { ui_oom("OOM: history strdup"); return; }
+    if (!hs->set[idx]) {
+        ui_oom("OOM: history strdup");
+        return;
+    }
     hs->time[idx] = time(NULL);
     hs->count++;
     FILE *f = fopen(cfg->history_file, "a");
-    if (f) { fprintf(f, "%s %lld\n", key, (long long)hs->time[idx]); fclose(f); }
+    if (f) {
+        fprintf(f, "%s %lld\n", key, (long long)hs->time[idx]);
+        fclose(f);
+    }
 }
 
 void history_store_prune(HistoryStore *hs, const Config *cfg) {
@@ -119,16 +151,23 @@ void history_store_prune(HistoryStore *hs, const Config *cfg) {
     history_rehash(hs, hs->set_size);
     size_t tn = strlen(cfg->history_file) + 5;
     char *tmp = malloc(tn);
-    if (!tmp) { ui_oom("OOM: history prune path"); return; }
+    if (!tmp) {
+        ui_oom("OOM: history prune path");
+        return;
+    }
     snprintf(tmp, tn, "%s.tmp", cfg->history_file);
     FILE *f = fopen(tmp, "w");
-    if (!f) { free(tmp); return; }
+    if (!f) {
+        free(tmp);
+        return;
+    }
     for (int i = 0; i < hs->set_size; i++) {
-        if (hs->set[i])
-            fprintf(f, "%s %lld\n", hs->set[i], (long long)hs->time[i]);
+        if (hs->set[i]) fprintf(f, "%s %lld\n", hs->set[i], (long long)hs->time[i]);
     }
     fclose(f);
     rename(tmp, cfg->history_file);
     free(tmp);
-    char b[80]; snprintf(b, sizeof(b), "History pruned %d old entries", pruned); ui_status(b);
+    char b[80];
+    snprintf(b, sizeof(b), "History pruned %d old entries", pruned);
+    ui_status(b);
 }

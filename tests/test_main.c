@@ -111,6 +111,12 @@ static void reset_state(void) {
     free(rt.cfg.source_channels);
     rt.cfg.source_channels = NULL;
     rt.cfg.num_sources = 0;
+    for (int i = 0; i < rt.cfg.num_disabled; i++) free(rt.cfg.disabled_channels[i]);
+    free(rt.cfg.disabled_channels);
+    rt.cfg.disabled_channels = NULL;
+    rt.cfg.num_disabled = 0;
+    rt.fatal = 0;
+    rt.fatal_msg[0] = 0;
     rt.source_count = 0;
     rt.resolve_index = 0;
     rt.resolve_active = 0;
@@ -956,6 +962,36 @@ static void test_queue_persist_on_dispatch_and_confirm(void) {
     CHECK(got == NULL);
 }
 
+static void test_queue_growth_across_wrap(void) {
+    rt.cfg.forward_delay_sec = 0;
+    for (int i = 0; i < 1024; i++) {
+        long long id = 1000 + i;
+        fwd_queue_push(&rt, -100123, &id, 1);
+    }
+    CHECK_LL(rt.fwd_queue_cap, 1024);
+    CHECK_LL(rt.fwd_queue_count, 1024);
+    CHECK_LL(process_fwd_queue(&rt, NULL), 1);
+    CHECK_LL(rt.fwd_queue_count, 1023);
+    CHECK_LL(rt.fwd_queue_head, 1);
+    char *argv[] = { NULL, NULL };
+    RequestId rid = { REQ_FORWARD_ONE, -100123, 1000 };
+    forward_handle(&rt, NULL, NULL, rid, argv);
+    CHECK_LL(rt.fwd_inflight_active, 0);
+
+    long long last = 5000;
+    fwd_queue_push(&rt, -100123, &last, 1);
+    CHECK_LL(rt.fwd_queue_cap, 1024);
+    last = 5001;
+    fwd_queue_push(&rt, -100123, &last, 1);
+    CHECK_LL(rt.fwd_queue_cap, 2048);
+    CHECK_LL(rt.fwd_queue_count, 1025);
+    CHECK_LL(rt.fwd_queue_head, 0);
+    CHECK_LL(rt.fwd_queue[0].ids[0], 1001);
+    CHECK_LL(rt.fwd_queue[1024].ids[0], 5001);
+    for (int i = 0; i < 1025; i++)
+        CHECK(rt.fwd_queue[i].count == 1 && rt.fwd_queue[i].ids != NULL);
+}
+
 static void test_history_prune_leaves_no_tmp(void) {
     history_store_add(&rt.history, &rt.cfg, -1, 1);
     set_history_time(-1, 1, time(NULL) - 25 * 3600);
@@ -1203,14 +1239,11 @@ static void test_resolve_partial_summary(void) {
     rt.source_count = 1;
     rt.source_chat_ids[0] = -100111;
     rt.resolve_index = 2;
-    char err[512];
-    capture_stderr_begin();
     resolve_next(&rt, NULL);
-    capture_stderr_end(err, sizeof(err));
     CHECK_LL(rt.resolve_active, 0);
-    CHECK_STR_CONTAINS(err, "WARNING: 1 of 2 source channels failed to resolve:");
-    CHECK_STR_CONTAINS(err, "bad");
-    CHECK(strstr(err, "good") == NULL);
+    CHECK_STR_CONTAINS(rt.status_msg, "WARNING: 1 of 2 source channels failed to resolve:");
+    CHECK_STR_CONTAINS(rt.status_msg, "bad");
+    CHECK(strstr(rt.status_msg, "good") == NULL);
 }
 
 static void test_resolve_dest_handle(void) {
@@ -1349,6 +1382,7 @@ int main(void) {
     run_test("queue_load_inflight_requeued", test_queue_load_inflight_requeued);
     run_test("queue_load_corrupt_skipped", test_queue_load_corrupt_skipped);
     run_test("queue_persist_on_dispatch_and_confirm", test_queue_persist_on_dispatch_and_confirm);
+    run_test("queue_growth_across_wrap", test_queue_growth_across_wrap);
     run_test("config_valid_full", test_config_valid_full);
     run_test("config_defaults", test_config_defaults);
     run_test("config_missing_file", test_config_missing_file);

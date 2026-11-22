@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef TGF_NOGUI
@@ -14,7 +15,7 @@
 
 #ifndef TGF_NOGUI
 static bool ncurses_ready = false;
-static int  action_msg_row = 0;
+static int action_msg_row = 0;
 
 static void ncurses_init(void) {
     initscr();
@@ -29,7 +30,8 @@ static void ncurses_cleanup(void) {
     if (ncurses_ready) endwin();
 }
 
-static void print_dashboard(const char *dest, const char *source, int src_count, int delay, const char *status) {
+static void print_dashboard(const char *dest, const char *source, int src_count, int delay,
+                            const char *status) {
     if (!ncurses_ready) return;
     int row = 1;
     clear();
@@ -40,7 +42,8 @@ static void print_dashboard(const char *dest, const char *source, int src_count,
     mvprintw(row++, 0, "       Target Channel ........ %s ", dest);
     mvprintw(row++, 0, "       Source Channels ....... %d ", src_count);
     mvprintw(row++, 0, "       Forward Delay ......... %dsec ", delay);
-    mvprintw(row++, 0, "       Status ................ %s ", (status && status[0]) ? status : "ACTIVE");
+    mvprintw(row++, 0, "       Status ................ %s ",
+             (status && status[0]) ? status : "ACTIVE");
     mvprintw(row++, 0, "       ---------------------------------------------  ");
     action_msg_row = row;
     mvprintw(row++, 0, "       FORWARDED from %s -> %s", source, dest);
@@ -57,43 +60,58 @@ static void update_action_msg(const char *source, const char *dest) {
 }
 #endif
 
+#ifndef TGF_NOGUI
 static char d_dest[128] = "", d_src[128] = "unknown", d_status[256] = "";
-static int  d_count = 0, d_delay = 0;
+static int d_sources = 0, d_delay = 0;
 static bool dash_active = false;
+static time_t last_draw = 0;
+#endif
 
 void ui_dashboard_begin(const char *dest, int delay) {
 #ifndef TGF_NOGUI
     snprintf(d_dest, sizeof(d_dest), "%s", dest ? dest : "");
     d_delay = delay;
-    if (!dash_active) { ncurses_init(); dash_active = true; }
+    if (!dash_active) {
+        ncurses_init();
+        dash_active = true;
+    }
 #else
-    (void)dest; (void)delay;
+    (void)dest;
+    (void)delay;
 #endif
 }
 
 void ui_dashboard_event(const tgf_event *ev) {
+#ifndef TGF_NOGUI
     if (!ev) return;
     if (ev->kind == TGF_EV_LOG && ev->text) {
         snprintf(d_status, sizeof(d_status), "%s", ev->text);
     } else if (ev->kind == TGF_EV_FORWARDED && ev->source) {
         snprintf(d_src, sizeof(d_src), "%s", ev->source);
-    } else if (ev->kind == TGF_EV_QUEUE) {
-        d_count = (int)ev->total;
+    } else if (ev->kind == TGF_EV_SOURCE_STATE && ev->total > 0) {
+        d_sources = (int)ev->total;
     }
+#else
+    (void)ev;
+#endif
 }
 
 void ui_dashboard_draw(void) {
 #ifndef TGF_NOGUI
     if (!dash_active) return;
-    print_dashboard(d_dest, d_src, d_count, d_delay, d_status);
+    time_t now = time(NULL);
+    if (now - last_draw < 1) return;
+    last_draw = now;
+    print_dashboard(d_dest, d_src, d_sources, d_delay, d_status);
     update_action_msg(d_src, d_dest);
-#else
-    (void)d_status;
 #endif
 }
 
 void ui_dashboard_end(void) {
 #ifndef TGF_NOGUI
-    if (dash_active) { ncurses_cleanup(); dash_active = false; }
+    if (dash_active) {
+        ncurses_cleanup();
+        dash_active = false;
+    }
 #endif
 }

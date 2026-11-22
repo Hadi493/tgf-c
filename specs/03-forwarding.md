@@ -118,6 +118,14 @@ resolved only by the response or the 60 s timeout (§6, §7).
   is dropped (messages are already marked forwarded → lost, TD-01/TD-19);
 - copies at most `MAX_FWD_IDS` ids; extras are silently discarded.
 
+Growth preserves FIFO order: the `count` live jobs are copied into the new
+array at indices `0..count-1` in logical order and `fwd_queue_head` is reset to
+0. The previous in-place `realloc` kept the old indices, so once the head was
+non-zero the new modulus exposed uninitialized slots as jobs; the 1025th
+enqueue then dereferenced a garbage `ids` pointer (SIGSEGV, observed
+2026-11-21 with `fwd_queue.txt` at 1024 jobs). Growth is now a linearization,
+not a modulus change.
+
 ### 5.2 Dispatch
 
 `process_fwd_queue` (`src/forward.c:204-235`) runs once per main-loop tick and:
@@ -244,7 +252,7 @@ success. Un-marking the dedupe entry on failure is deliberately **not** done
 | Request buffer | 8 KiB (`src/transport.c:9`) | truncated JSON still sent |
 | Id string buffer | 8 KiB (`src/forward.c:216`) | truncated id list |
 | Payload buffer | 16 KiB (`src/forward.c:221`) | truncated JSON |
-| Queue capacity | unbounded growth | ring buffer doubles from 1024; ~48 B + 8 B/id per job |
+| Queue capacity | unbounded growth | ring buffer doubles from 1024; growth linearizes live jobs and resets head to 0; ~48 B + 8 B/id per job |
 | Retry budget | 3 attempts (`MAX_FWD_ATTEMPTS`) | job dropped with a status line |
 | In-flight timeout | 60 s (`FWD_TIMEOUT_SEC`) | retryable-failure path |
 | Flood pause | `retry after N`, uncapped | all dispatch paused until `now + N` |
@@ -281,6 +289,7 @@ success. Un-marking the dedupe entry on failure is deliberately **not** done
 | SC-03-07 | Kill the process with several jobs queued | Queue resumes on restart; queued posts are forwarded (in-flight job may duplicate) |
 | SC-03-08 | Album arrives across two polls (slow source) | Two partial albums in destination |
 | SC-03-11 | Album with >256 members in one batch | Split into multiple ascending ≤256-id jobs; all members forwarded |
+| SC-03-12 | Queue holds 1024 jobs, one is dispatched (head advances), then another is enqueued | Capacity doubles, head resets to 0, the 1024 live jobs keep FIFO order, and no uninitialized slot is read (regression for the 2026-11-21 SIGSEGV) |
 | SC-03-09 | Trigger a flood wait (rapid forwards) | `Flood wait: pausing Ns`; dispatch resumes after the pause; no messages lost |
 | SC-03-10 | Transient forward error that later succeeds | job retried; message delivered; `FORWARDED` line on success |
 
@@ -296,3 +305,4 @@ success. Un-marking the dedupe entry on failure is deliberately **not** done
 | 2026-11-19 | Step 4.4a: queue + in-flight persisted to fwd_queue.txt (05 §5), resume on restart; TD-03 addressed; SC-03-07 updated |
 | 2026-11-19 | Step 4.5: album grouping splits >256-member albums (overflow fixed, no loss); transport_send drops truncated requests instead of sending; reply-child excess remains a documented residual; SC-03-11 added |
 | 2026-11-19 | Step 4.6: ordering active when enable_sequential_forwarding OR enable_ordering (TD-14) |
+| 2026-11-21 | Fixed queue growth across a non-zero head: live jobs are linearized and `head` reset to 0. The old in-place `realloc` reinterpreted the ring under the new modulus and exposed uninitialized jobs, crashing on the 1025th enqueue. §5.1, §8 and SC-03-12 updated. |

@@ -48,7 +48,16 @@ Notes:
   username fails resolution and is skipped.
 - No range checks: negative/zero delay disables spacing; negative/zero window
   disables cutoff and expiry; very large arrays are attempted with `calloc`.
-- Unknown keys are ignored.
+- `disabled_channels` is optional. Entries are matched against
+  `source_channels` after normalizing a leading `@` or `t.me/`, so `@name`,
+  `name` and `t.me/name` are equivalent. A disabled source is not resolved or
+  polled, but stays in `source_channels` and keeps its tracker/history rows.
+- The core library exposes the same schema as `tgf_config_load` (spec 10 §5).
+  It validates the same required fields and returns `TGF_ERR_PARSE` instead of
+  exiting; `tgf_config_error()` carries the legacy message
+  (`Missing api_id`, …) for the CLI consumer. `tgf_config_save` merges into the
+  existing file so unknown keys survive (GUI-050).
+- Unknown keys are ignored by the loader.
 - `config.json.example` is valid JSON and includes `history_window_hours`
   (TD-18, fixed). `api_id` uses the numeric placeholder `123456`; replace it
   and `api_hash` with real credentials before running.
@@ -270,5 +279,5 @@ migration are TDLib’s concern. Deleting `tdlib_db/` forces a new login.
 | 2026-11-19 | SC-05-01 expectation corrected to observed behavior: placeholder credentials pass local config validation; TDLib proceeds to the phone prompt |
 | 2026-11-19 | Step 4.4a: new §5 durable forward queue (fwd_queue.txt); history prune rewrite is tmp+rename (TD-27); TD-03 addressed; sections renumbered 5-8 → 6-9; SC-05-06 updated, SC-05-08 added |
 | 2026-11-19 | Step 4.4b: new §4.3 pending journal (seq_pending.txt); TD-02 addressed; SC-05-09 added |
-| 2026-11-21 | Added optional `disabled_channels` array to schema for GUI per-source enable/disable |
+| 2026-11-21 | Added optional `disabled_channels` array to schema for GUI per-source enable/disable; documented handle normalization and the core `tgf_config_load`/`save` contract. |
 | 2026-11-19 | Step 4.6: new enable_ordering key (ordering without backfill); TD-14 addressed |
