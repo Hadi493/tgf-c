@@ -19,6 +19,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake libncurses5-dev cppcheck gperf libssl-dev zlib1g-dev
 
+      - name: Build nob
+        run: cc -o nob nob.c
+
       - name: Build
         run: ./nob
 
