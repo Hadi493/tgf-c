@@ -194,9 +194,11 @@ static int run_sanitize(void)
         cmd_append(&cmd, "-I" TD_BUILD);
         cmd_append(&cmd, "-L" TD_BUILD);
         cmd_append(&cmd, "-ltdjson");
+        cmd_append(&cmd, "-Wl,-z,notext");
         cmd_append(&cmd, "-Wl,-rpath,$ORIGIN/" TD_BUILD);
     } else {
         cmd_append(&cmd, "-ltdjson");
+        cmd_append(&cmd, "-Wl,-z,notext");
     }
     cmd_append(&cmd, "-lncurses");
 #endif
@@ -392,9 +394,11 @@ int main(int argc, char **argv)
         cmd_append(&cmd, "-I" TD_BUILD);
         cmd_append(&cmd, "-L" TD_BUILD);
         cmd_append(&cmd, "-ltdjson");
+        cmd_append(&cmd, "-Wl,-z,notext");
         cmd_append(&cmd, "-Wl,-rpath,$ORIGIN/" TD_BUILD);
     } else {
         cmd_append(&cmd, "-ltdjson");
+        cmd_append(&cmd, "-Wl,-z,notext");
     }
     cmd_append(&cmd, "-lncurses");
 #endif
