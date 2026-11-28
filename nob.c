@@ -66,7 +66,7 @@ static int build_td(void)
                "-DCMAKE_BUILD_TYPE=Release");
     if (!cmd_run(&b)) return 0;
     b.count = 0;
-    cmd_append(&b, "cmake", "--build", TD_BUILD, "--target", "tdjson", "--", "-j1");
+    cmd_append(&b, "cmake", "--build", TD_BUILD, "--target", "tdjson", "--", "-j4");
     return cmd_run(&b);
 }
 

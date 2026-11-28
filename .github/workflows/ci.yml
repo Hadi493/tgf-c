@@ -9,6 +9,7 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,9 +25,10 @@ jobs:
 
       - name: Build
         run: ./nob
+        timeout-minutes: 90
 
       - name: Lint (narrow)
-        run: cc -Wall -Wextra -Wshadow -Wpedantic -fsanitize=address -Ilib/td -Ilib/td/build -Isrc -I. -c src/main.c -o /dev/null
+        run: cc -Wall -Wextra -Wshadow -Wpedantic -fsanitize=address -Ilib/td -Ilib/td/build -Isrc -I. -Icore -c src/main.c -o /dev/null
 
       - name: Static analysis
         run: |
@@ -39,3 +41,4 @@ jobs:
 
       - name: Sanitize build
         run: ./nob sanitize
+        timeout-minutes: 90
